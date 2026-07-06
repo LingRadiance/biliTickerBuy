@@ -264,7 +264,7 @@ def test_proxy_pool_fanout_builds_one_create_connection_per_proxy():
     ]
 
 
-def test_proxy_pool_fanout_repeats_until_one_proxy_succeeds():
+def test_proxy_pool_fanout_returns_900001_after_one_round():
     FakeH2Connection.instances = []
     FakeH2Connection.post_bodies_by_proxy = {
         "http://127.0.0.1:18080": [b'{"errno":900001}', b'{"errno":900001}'],
@@ -284,11 +284,42 @@ def test_proxy_pool_fanout_repeats_until_one_proxy_succeeds():
         json={"project_id": 1},
     )
 
-    assert response.json()["errno"] == 0
+    assert response.json()["errno"] == 900001
     post_count = sum(
         1
         for instance in FakeH2Connection.instances
         for call in instance.calls
         if call[0] == "POST"
     )
-    assert post_count >= 4
+    assert post_count == 2
+    assert FakeH2Connection.post_bodies_by_proxy == {
+        "http://127.0.0.1:18080": [b'{"errno":900001}'],
+        "http://127.0.0.1:28080": [b'{"errno":0}'],
+    }
+
+
+def test_proxy_pool_fanout_detects_percent_encoded_create_v2_path():
+    FakeH2Connection.instances = []
+    FakeH2Connection.post_bodies_by_proxy = {}
+    client = ProxyPoolCreateV2FanoutJA3H2Client(
+        proxy_pool=[
+            "http://127.0.0.1:18080",
+            "http://127.0.0.1:28080",
+        ],
+        connection_factory=FakeH2Connection,
+        connections_per_source_ip=1,
+    )
+    encoded_url = "https://show.bilibili.com/api/%74icket/order/crea%74eV%32"
+
+    response = client.post(encoded_url, json={"project_id": 1})
+
+    assert response.status_code == 200
+    business_connections = [
+        instance
+        for instance in FakeH2Connection.instances
+        if instance.calls and instance.calls[-1][1] == encoded_url
+    ]
+    assert sorted(instance.proxy_url for instance in business_connections) == [
+        "http://127.0.0.1:18080",
+        "http://127.0.0.1:28080",
+    ]

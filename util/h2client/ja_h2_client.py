@@ -184,12 +184,6 @@ def _response_errno(response: httpx.Response) -> int | None:
         return None
 
 
-def _is_create_success_response(response: httpx.Response) -> bool:
-    if response.status_code != 200:
-        return False
-    return _response_errno(response) == 0
-
-
 class _SourcePoolJA3H2Client(AbstractH2Client):
     def __init__(
         self,
@@ -701,9 +695,11 @@ class _CreateV2FanoutJA3H2Client(_SourcePoolJA3H2Client):
 
     def _should_fanout_create_v2(self, url: str) -> bool:
         parsed = urllib.parse.urlsplit(url)
+        decoded_path = urllib.parse.unquote(parsed.path)
         return (
-            parsed.hostname or ""
-        ).lower() == self._healthcheck_host.lower() and "createV2" in parsed.path
+            (parsed.hostname or "").lower() == self._healthcheck_host.lower()
+            and "createv2" in decoded_path.lower()
+        )
 
     def _send_fanout_request(
         self,
@@ -819,64 +815,61 @@ class ProxyPoolCreateV2FanoutJA3H2Client(_CreateV2FanoutJA3H2Client):
         first_other: httpx.Response | None = None
         last_exc: Exception | None = None
 
-        while True:
-            pool = list(self._ensure_pool(host, port))
-            if not pool:
-                if first_other is not None:
-                    return first_other
-                if first_900001 is not None:
-                    return first_900001
-                if first_429 is not None:
-                    return first_429
-                if first_412 is not None:
-                    return first_412
-                raise self._to_httpx_error(method, url, last_exc)
+        pool = list(self._ensure_pool(host, port))
+        if not pool:
+            raise self._to_httpx_error(method, url, None)
 
-            executor = ThreadPoolExecutor(
-                max_workers=len(pool),
-                thread_name_prefix="btb-proxy-createv2-fanout",
+        executor = ThreadPoolExecutor(
+            max_workers=len(pool),
+            thread_name_prefix="btb-proxy-createv2-fanout",
+        )
+        futures = [
+            executor.submit(
+                self._send_fanout_request,
+                slot,
+                method,
+                url,
+                request_headers,
+                content,
+                request,
             )
-            futures = [
-                executor.submit(
-                    self._send_fanout_request,
-                    slot,
-                    method,
-                    url,
-                    request_headers,
-                    content,
-                    request,
+            for slot in pool
+        ]
+        for future in futures:
+            future.add_done_callback(
+                lambda done, host=host, port=port: self._handle_fanout_done(
+                    host,
+                    port,
+                    done,
                 )
-                for slot in pool
-            ]
-            for future in futures:
-                future.add_done_callback(
-                    lambda done, host=host, port=port: self._handle_fanout_done(
-                        host,
-                        port,
-                        done,
-                    )
-                )
+            )
 
-            try:
-                for future in as_completed(futures):
-                    outcome = future.result()
-                    if outcome.response is None:
-                        last_exc = outcome.exc
-                        continue
+        try:
+            for future in as_completed(futures):
+                outcome = future.result()
+                if outcome.response is None:
+                    last_exc = outcome.exc
+                    continue
 
-                    if _is_create_success_response(outcome.response):
-                        executor.shutdown(wait=False, cancel_futures=False)
-                        return outcome.response
+                status_code = outcome.response.status_code
+                errno = _response_errno(outcome.response)
+                if status_code == 200 and errno == 900001 and first_900001 is None:
+                    first_900001 = outcome.response
+                elif status_code == 429 and first_429 is None:
+                    first_429 = outcome.response
+                elif status_code == 412 and first_412 is None:
+                    first_412 = outcome.response
+                elif status_code not in {412, 429} and first_other is None:
+                    first_other = outcome.response
 
-                    status_code = outcome.response.status_code
-                    errno = _response_errno(outcome.response)
-                    if status_code == 200 and errno == 900001 and first_900001 is None:
-                        first_900001 = outcome.response
-                    elif status_code == 429 and first_429 is None:
-                        first_429 = outcome.response
-                    elif status_code == 412 and first_412 is None:
-                        first_412 = outcome.response
-                    elif status_code not in {412, 429} and first_other is None:
-                        first_other = outcome.response
-            finally:
-                executor.shutdown(wait=True, cancel_futures=False)
+            if first_other is not None:
+                return first_other
+            if first_900001 is not None:
+                return first_900001
+            if first_429 is not None:
+                return first_429
+            if first_412 is not None:
+                return first_412
+            raise self._to_httpx_error(method, url, last_exc)
+        finally:
+            executor.shutdown(wait=True, cancel_futures=False)
