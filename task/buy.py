@@ -59,6 +59,25 @@ from util.request.exceptions import BiliConnectionError, BiliRateLimitError
 LOCAL_FANOUT_PROXY_STRATEGY = "local_fanout"
 
 
+def _local_fanout_h2_client_config(proxy_string: str | None):
+    from util.h2client.ja_h2_client import ProxyPoolCreateV2FanoutJA3H2Client
+
+    proxy_pool = [
+        proxy
+        for proxy in ProxyManager.parse_proxy_list(proxy_string)
+        if proxy.lower() != "none"
+    ]
+    if not proxy_pool:
+        logger.warning(
+            "代理池并发策略未检测到代理节点，已回退为标准请求，避免直连并发触发 900001"
+        )
+        return None, None
+    return ProxyPoolCreateV2FanoutJA3H2Client, {
+        "proxy_pool": proxy_pool,
+        "connections_per_source_ip": 1,
+    }
+
+
 @dataclass(slots=True)
 class Buy:
     config: BuyConfig
@@ -203,6 +222,40 @@ def _extract_prepare_token(result: dict | None) -> str | None:
 
 def _format_reprepare_reason(reason: str) -> str:
     return f"重新准备订单，原因：{reason}"
+
+
+def _refresh_project_detail_and_warm_connection(
+    *,
+    request: BiliRequest,
+    tickets_info: dict,
+    is_hot_project: bool,
+) -> tuple[bool, list[str]]:
+    logger.info("预热/复检：开始拉取项目详情并预热连接")
+    messages: list[str] = []
+    try:
+        payload = fetch_project_payload(
+            request=request,
+            project_id=int(tickets_info["project_id"]),
+        )
+    except Exception as exc:
+        message = f"预热/复检：拉取项目详情失败，继续使用当前票档配置: {exc}"
+        logger.warning(message)
+        messages.append(message)
+    else:
+        if bool(payload["hotProject"]) and not is_hot_project:
+            is_hot_project = True
+            tickets_info["is_hot_project"] = True
+            logger.info("预热/复检：检测到 hotProject=True，已升级为 hot 抢票策略")
+        else:
+            logger.info("预热/复检完成。")
+
+    try:
+        request.prewarm_h2_connection(f"{base_url}/")
+    except Exception as exc:
+        message = f"预热/复检：预热连接失败，继续抢票: {exc}"
+        logger.warning(message)
+        messages.append(message)
+    return is_hot_project, messages
 
 
 def buy_stream(config: BuyConfig):
@@ -397,15 +450,9 @@ def buy_stream(config: BuyConfig):
     h2_client_type = None
     h2_client_options = None
     if config.create_request_proxy_strategy == LOCAL_FANOUT_PROXY_STRATEGY:
-        from util.h2client.ja_h2_client import ProxyPoolCreateV2FanoutJA3H2Client
-
-        proxy_pool = [
-            proxy
-            for proxy in ProxyManager.parse_proxy_list(config.https_proxys)
-            if proxy.lower() != "none"
-        ]
-        h2_client_type = ProxyPoolCreateV2FanoutJA3H2Client
-        h2_client_options = {"proxy_pool": proxy_pool}
+        h2_client_type, h2_client_options = _local_fanout_h2_client_config(
+            config.https_proxys
+        )
     _request = BiliRequest(
         cookies=cookies,
         proxy=config.https_proxys,
@@ -431,17 +478,12 @@ def buy_stream(config: BuyConfig):
 
     def refresh_hot_and_warm():
         nonlocal is_hot_project
-        logger.info("预热/复检：开始拉取项目详情并预热连接")
-        payload = fetch_project_payload(
-            request=_request, project_id=int(tickets_info["project_id"])
+        is_hot_project, messages = _refresh_project_detail_and_warm_connection(
+            request=_request,
+            tickets_info=tickets_info,
+            is_hot_project=is_hot_project,
         )
-        if bool(payload["hotProject"]) and not is_hot_project:
-            is_hot_project = True
-            tickets_info["is_hot_project"] = True
-            logger.info("预热/复检：检测到 hotProject=True，已升级为 hot 抢票策略")
-        else:
-            logger.info("预热/复检完成。")
-        _request.prewarm_h2_connection(f"{base_url}/")
+        return messages
 
     # 循环内主动复检项目详情：按随机 create 次数触发纯拉取，与 100001 路径共享计数。
     # fetch 落在两次 create 的 sleep 窗口，不与 create 并发。

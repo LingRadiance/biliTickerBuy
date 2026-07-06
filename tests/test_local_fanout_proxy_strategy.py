@@ -4,6 +4,7 @@ import httpx
 
 from app_cmd.config.BuyConfig import BuyConfig
 from interface.config import build_runtime_options
+from task.buy import _local_fanout_h2_client_config
 from tab.go import _build_task_proxy_list
 from util.request.BiliRequest import AbstractH2Client, BiliRequest
 from util.h2client.h2connection import H2Response
@@ -154,6 +155,26 @@ def test_runtime_strategy_flows_into_buy_config():
 
     assert config.create_request_proxy_strategy == "local_fanout"
     assert "--create-request-proxy-strategy" in config.to_cli_args()
+
+
+def test_local_fanout_h2_config_requires_real_proxy_pool():
+    assert _local_fanout_h2_client_config("") == (None, None)
+    assert _local_fanout_h2_client_config("none,direct") == (None, None)
+
+
+def test_local_fanout_h2_config_uses_one_connection_per_proxy():
+    h2_client_type, h2_client_options = _local_fanout_h2_client_config(
+        "none,http://127.0.0.1:18080,direct,socks5://127.0.0.1:19090"
+    )
+
+    assert h2_client_type is ProxyPoolCreateV2FanoutJA3H2Client
+    assert h2_client_options == {
+        "proxy_pool": [
+            "http://127.0.0.1:18080",
+            "socks5://127.0.0.1:19090",
+        ],
+        "connections_per_source_ip": 1,
+    }
 
 
 def test_h2_client_constructor_uses_abstract_client_interface():
