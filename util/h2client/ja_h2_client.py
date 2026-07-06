@@ -268,7 +268,11 @@ class _SourcePoolJA3H2Client(AbstractH2Client):
 
     def close(self) -> None:
         with self._lock:
-            slots = [slot for pool in self._pools.values() for slot in pool]
+            slots = [
+                slot
+                for pool in self._pools.values()
+                for slot in pool
+            ]
             self._pools.clear()
             self._available_sources.clear()
         for slot in slots:
@@ -364,7 +368,11 @@ class _SourcePoolJA3H2Client(AbstractH2Client):
                 if outcome.ok:
                     passed[outcome.source] += 1
 
-        available_sources = [source for source in sources if passed[source] > 0]
+        available_sources = [
+            source
+            for source in sources
+            if passed[source] > 0
+        ]
         if not available_sources:
             raise httpx.ConnectError("no H2 source passed healthcheck")
 
@@ -478,7 +486,8 @@ class _SourcePoolJA3H2Client(AbstractH2Client):
                 removed = True
         if exc is None:
             logger.warning(
-                "H2 discard connection source_ip={} host={}:{} reason={} removed={}",
+                "H2 discard connection source_ip={} host={}:{} "
+                "reason={} removed={}",
                 slot.source.ip,
                 host,
                 port,
@@ -702,8 +711,9 @@ class _CreateV2FanoutJA3H2Client(_SourcePoolJA3H2Client):
     def _should_fanout_create_v2(self, url: str) -> bool:
         parsed = urllib.parse.urlsplit(url)
         return (
-            parsed.hostname or ""
-        ).lower() == self._healthcheck_host.lower() and "createV2" in parsed.path
+            (parsed.hostname or "").lower() == self._healthcheck_host.lower()
+            and "createV2" in parsed.path
+        )
 
     def _send_fanout_request(
         self,

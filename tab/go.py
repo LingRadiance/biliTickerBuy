@@ -3,6 +3,7 @@ import html
 import json
 import os
 import threading
+import time
 import uuid
 
 import gradio as gr
@@ -50,9 +51,7 @@ def _build_task_log_path(filename: str) -> str:
     return os.path.join(LOG_DIR, f"{safe_name}_{uuid.uuid4().hex[:8]}.log")
 
 
-def _build_task_proxy_list(
-    proxy_string: str | None, *, include_direct: bool
-) -> list[str]:
+def _build_task_proxy_list(proxy_string: str | None, *, include_direct: bool) -> list[str]:
     proxies = ProxyManager.parse_proxy_list(proxy_string)
     proxies = [proxy for proxy in proxies if proxy.lower() != "none"]
     if include_direct:
@@ -455,7 +454,7 @@ def go_start_tab():
         stop_all_btn = gr.Button(
             "一键终止",
             variant="stop",
-            elem_classes="btb-soft-button btb-stop-all-button",
+            elem_classes="btb-soft-button btb-task-button btb-task-button--stop",
             scale=0,
             min_width=120,
         )

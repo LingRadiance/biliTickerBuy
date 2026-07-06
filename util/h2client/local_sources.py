@@ -23,7 +23,10 @@ def _is_usable_source_ip(value: str) -> bool:
     except ValueError:
         return False
     return not (
-        ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_link_local
+        ip.is_loopback
+        or ip.is_unspecified
+        or ip.is_multicast
+        or ip.is_link_local
     )
 
 

@@ -250,12 +250,8 @@ def build_client_hello(
         )
 
     body_without_padding_data = body_with_padding(0)
-    handshake_without_padding_data = (
-        b"\x01" + u24(len(body_without_padding_data)) + body_without_padding_data
-    )
-    padding_len = profile.target_record_payload_len - len(
-        handshake_without_padding_data
-    )
+    handshake_without_padding_data = b"\x01" + u24(len(body_without_padding_data)) + body_without_padding_data
+    padding_len = profile.target_record_payload_len - len(handshake_without_padding_data)
     if padding_len < 0:
         raise ValueError(
             "ClientHello is already larger than the target record length; "
@@ -290,7 +286,7 @@ def tls_version_for_ja4(version: int) -> str:
         0x0303: "12",
         0x0304: "13",
     }
-    return mapping.get(version, f"{version & 0xFF:02d}")
+    return mapping.get(version, f"{version & 0xff:02d}")
 
 
 def is_domain_name(value: str) -> bool:
@@ -326,7 +322,8 @@ def parse_client_hello_record(record: bytes) -> dict[str, object]:
     cipher_len = struct.unpack("!H", body[pos : pos + 2])[0]
     pos += 2
     ciphers = [
-        struct.unpack("!H", body[i : i + 2])[0] for i in range(pos, pos + cipher_len, 2)
+        struct.unpack("!H", body[i : i + 2])[0]
+        for i in range(pos, pos + cipher_len, 2)
     ]
     pos += cipher_len
 
@@ -378,9 +375,7 @@ def parse_client_hello_record(record: bytes) -> dict[str, object]:
             while p < 2 + names_len and p < len(ext_body):
                 name_len = ext_body[p]
                 p += 1
-                alpn_protocols.append(
-                    ext_body[p : p + name_len].decode("ascii", errors="replace")
-                )
+                alpn_protocols.append(ext_body[p : p + name_len].decode("ascii", errors="replace"))
                 p += name_len
         elif ext_type == 43 and ext_body:
             version_len = ext_body[0]
@@ -440,9 +435,7 @@ def fingerprints_from_client_hello(record: bytes) -> Fingerprints:
     )
 
     cipher_hex = ",".join(f"{cipher:04x}" for cipher in sorted(ciphers))
-    ja4_extensions = sorted(
-        ext_type for ext_type in extensions if ext_type not in (0, 16)
-    )
+    ja4_extensions = sorted(ext_type for ext_type in extensions if ext_type not in (0, 16))
     extension_hex = ",".join(f"{ext_type:04x}" for ext_type in ja4_extensions)
     signature_hex = ",".join(f"{alg:04x}" for alg in signature_algorithms)
     extension_signature_hex = f"{extension_hex}_{signature_hex}"
@@ -500,9 +493,7 @@ class CipherSuiteSpec:
 CIPHER_SUITES = {
     0x1301: CipherSuiteSpec("TLS_AES_128_GCM_SHA256", hashes.SHA256, 32, 16, AESGCM),
     0x1302: CipherSuiteSpec("TLS_AES_256_GCM_SHA384", hashes.SHA384, 48, 32, AESGCM),
-    0x1303: CipherSuiteSpec(
-        "TLS_CHACHA20_POLY1305_SHA256", hashes.SHA256, 32, 32, ChaCha20Poly1305
-    ),
+    0x1303: CipherSuiteSpec("TLS_CHACHA20_POLY1305_SHA256", hashes.SHA256, 32, 32, ChaCha20Poly1305),
 }
 
 HANDSHAKE_NAMES = {
@@ -571,9 +562,7 @@ def hkdf_extract(salt: bytes | None, ikm: bytes, spec: CipherSuiteSpec) -> bytes
     return hmac_bytes(salt, ikm, spec)
 
 
-def hkdf_expand(
-    secret: bytes, info: bytes, length: int, spec: CipherSuiteSpec
-) -> bytes:
+def hkdf_expand(secret: bytes, info: bytes, length: int, spec: CipherSuiteSpec) -> bytes:
     output = b""
     previous = b""
     counter = 1
@@ -586,17 +575,13 @@ def hkdf_expand(
     return output[:length]
 
 
-def hkdf_expand_label(
-    secret: bytes, label: bytes, context: bytes, length: int, spec: CipherSuiteSpec
-) -> bytes:
+def hkdf_expand_label(secret: bytes, label: bytes, context: bytes, length: int, spec: CipherSuiteSpec) -> bytes:
     full_label = b"tls13 " + label
     hkdf_label = u16(length) + vec_u8(full_label) + vec_u8(context)
     return hkdf_expand(secret, hkdf_label, length, spec)
 
 
-def derive_secret(
-    secret: bytes, label: bytes, transcript_hash: bytes, spec: CipherSuiteSpec
-) -> bytes:
+def derive_secret(secret: bytes, label: bytes, transcript_hash: bytes, spec: CipherSuiteSpec) -> bytes:
     return hkdf_expand_label(secret, label, transcript_hash, spec.hash_len, spec)
 
 
@@ -611,9 +596,7 @@ class TrafficCipher:
     sequence: int = 0
 
     def __post_init__(self) -> None:
-        self.key = hkdf_expand_label(
-            self.secret, b"key", b"", self.spec.key_len, self.spec
-        )
+        self.key = hkdf_expand_label(self.secret, b"key", b"", self.spec.key_len, self.spec)
         self.iv = hkdf_expand_label(self.secret, b"iv", b"", 12, self.spec)
         self.aead = self.spec.aead_factory(self.key)
 
@@ -678,12 +661,8 @@ class TLS13Connection:
             if content_type == 21:
                 raise_for_alert(fragment)
             if content_type != 23:
-                raise ValueError(
-                    f"expected encrypted TLS record, got content type {content_type}"
-                )
-            inner_type, plaintext = self.server_app_cipher.decrypt_record(
-                header, fragment
-            )
+                raise ValueError(f"expected encrypted TLS record, got content type {content_type}")
+            inner_type, plaintext = self.server_app_cipher.decrypt_record(header, fragment)
             if inner_type == 22:
                 continue
             return inner_type, plaintext
@@ -721,9 +700,7 @@ def raise_for_alert(fragment: bytes) -> None:
         raise TLSAlert("received malformed TLS alert")
     level, description = fragment[0], fragment[1]
     name = ALERT_DESCRIPTIONS.get(description, f"unknown_{description}")
-    raise TLSAlert(
-        f"received TLS alert level={level} description={description} ({name})"
-    )
+    raise TLSAlert(f"received TLS alert level={level} description={description} ({name})")
 
 
 def parse_server_hello(message: bytes) -> ServerHello:
@@ -733,15 +710,14 @@ def parse_server_hello(message: bytes) -> ServerHello:
     pos = 0
     legacy_version = struct.unpack("!H", body[pos : pos + 2])[0]
     if legacy_version != 0x0303:
-        raise ValueError(
-            f"unexpected ServerHello legacy_version: 0x{legacy_version:04x}"
-        )
+        raise ValueError(f"unexpected ServerHello legacy_version: 0x{legacy_version:04x}")
     pos += 2
 
     server_random = body[pos : pos + 32]
     pos += 32
     hello_retry_request_random = bytes.fromhex(
-        "cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c"
+        "cf21ad74e59a6111be1d8c021e65b891"
+        "c2a211167abb8c5e079e09e2c8a8339c"
     )
     if server_random == hello_retry_request_random:
         raise NotImplementedError("TLS 1.3 HelloRetryRequest is not implemented")
@@ -809,9 +785,7 @@ def parse_encrypted_extensions(message: bytes) -> str:
             if names_len and p < len(ext_body):
                 name_len = ext_body[p]
                 p += 1
-                selected_alpn = ext_body[p : p + name_len].decode(
-                    "ascii", errors="replace"
-                )
+                selected_alpn = ext_body[p : p + name_len].decode("ascii", errors="replace")
         pos += 4 + ext_len
     return selected_alpn
 
@@ -824,9 +798,7 @@ def pop_first_handshake_message(sock: socket.socket, buffer: HandshakeBuffer) ->
         if content_type == 21:
             raise_for_alert(fragment)
         if content_type != 22:
-            raise ValueError(
-                f"expected plaintext handshake record, got content type {content_type}"
-            )
+            raise ValueError(f"expected plaintext handshake record, got content type {content_type}")
         buffer.feed(fragment)
         messages = buffer.pop_messages()
         if messages:
@@ -835,9 +807,7 @@ def pop_first_handshake_message(sock: socket.socket, buffer: HandshakeBuffer) ->
             return messages[0]
 
 
-def open_tls13_connection(
-    sock: socket.socket, built: BuiltClientHello
-) -> TLS13Connection:
+def open_tls13_connection(sock: socket.socket, built: BuiltClientHello) -> TLS13Connection:
     sock.sendall(built.record)
 
     plaintext_buffer = HandshakeBuffer()
@@ -852,9 +822,7 @@ def open_tls13_connection(
             "this script implements TLS 1.3 handshakes only"
         )
     if server_hello.cipher_suite not in CIPHER_SUITES:
-        raise NotImplementedError(
-            f"unsupported TLS 1.3 cipher suite: 0x{server_hello.cipher_suite:04x}"
-        )
+        raise NotImplementedError(f"unsupported TLS 1.3 cipher suite: 0x{server_hello.cipher_suite:04x}")
     if server_hello.key_share_group != built.profile.key_share_group:
         raise NotImplementedError(
             f"server selected key share group {server_hello.key_share_group}; "
@@ -862,9 +830,7 @@ def open_tls13_connection(
         )
 
     spec = CIPHER_SUITES[server_hello.cipher_suite]
-    peer_public_key = x25519.X25519PublicKey.from_public_bytes(
-        server_hello.key_share_public
-    )
+    peer_public_key = x25519.X25519PublicKey.from_public_bytes(server_hello.key_share_public)
     shared_secret = built.private_key.exchange(peer_public_key)
 
     zero_secret = b"\x00" * spec.hash_len
@@ -874,12 +840,8 @@ def open_tls13_connection(
     handshake_secret = hkdf_extract(derived_early, shared_secret, spec)
 
     server_hello_hash = hash_bytes(bytes(transcript), spec)
-    client_hs_secret = derive_secret(
-        handshake_secret, b"c hs traffic", server_hello_hash, spec
-    )
-    server_hs_secret = derive_secret(
-        handshake_secret, b"s hs traffic", server_hello_hash, spec
-    )
+    client_hs_secret = derive_secret(handshake_secret, b"c hs traffic", server_hello_hash, spec)
+    server_hs_secret = derive_secret(handshake_secret, b"s hs traffic", server_hello_hash, spec)
     client_hs_cipher = TrafficCipher(spec, client_hs_secret)
     server_hs_cipher = TrafficCipher(spec, server_hs_secret)
 
@@ -894,15 +856,11 @@ def open_tls13_connection(
         if content_type == 21:
             raise_for_alert(fragment)
         if content_type != 23:
-            raise ValueError(
-                f"expected encrypted handshake record, got content type {content_type}"
-            )
+            raise ValueError(f"expected encrypted handshake record, got content type {content_type}")
 
         inner_type, plaintext = server_hs_cipher.decrypt_record(header, fragment)
         if inner_type != 22:
-            raise ValueError(
-                f"expected encrypted handshake content, got inner type {inner_type}"
-            )
+            raise ValueError(f"expected encrypted handshake content, got inner type {inner_type}")
         encrypted_buffer.feed(plaintext)
 
         for message in encrypted_buffer.pop_messages():
@@ -911,12 +869,8 @@ def open_tls13_connection(
                 selected_alpn = parse_encrypted_extensions(message)
                 transcript.extend(message)
             elif msg_type == 20:
-                finished_key = hkdf_expand_label(
-                    server_hs_secret, b"finished", b"", spec.hash_len, spec
-                )
-                expected_verify_data = hmac_bytes(
-                    finished_key, hash_bytes(bytes(transcript), spec), spec
-                )
+                finished_key = hkdf_expand_label(server_hs_secret, b"finished", b"", spec.hash_len, spec)
+                expected_verify_data = hmac_bytes(finished_key, hash_bytes(bytes(transcript), spec), spec)
                 received_verify_data = message[4:]
                 if received_verify_data != expected_verify_data:
                     raise ValueError("server Finished verify_data did not match")
@@ -929,9 +883,7 @@ def open_tls13_connection(
             break
 
     app_traffic_hash = hash_bytes(bytes(transcript), spec)
-    client_finished_key = hkdf_expand_label(
-        client_hs_secret, b"finished", b"", spec.hash_len, spec
-    )
+    client_finished_key = hkdf_expand_label(client_hs_secret, b"finished", b"", spec.hash_len, spec)
     client_verify_data = hmac_bytes(client_finished_key, app_traffic_hash, spec)
     client_finished = b"\x14" + u24(len(client_verify_data)) + client_verify_data
 
@@ -941,12 +893,8 @@ def open_tls13_connection(
 
     derived_handshake = derive_secret(handshake_secret, b"derived", empty_hash, spec)
     master_secret = hkdf_extract(derived_handshake, zero_secret, spec)
-    client_app_secret = derive_secret(
-        master_secret, b"c ap traffic", app_traffic_hash, spec
-    )
-    server_app_secret = derive_secret(
-        master_secret, b"s ap traffic", app_traffic_hash, spec
-    )
+    client_app_secret = derive_secret(master_secret, b"c ap traffic", app_traffic_hash, spec)
+    server_app_secret = derive_secret(master_secret, b"s ap traffic", app_traffic_hash, spec)
 
     return TLS13Connection(
         sock=sock,
@@ -957,9 +905,7 @@ def open_tls13_connection(
     )
 
 
-def complete_tls13_handshake(
-    sock: socket.socket, built: BuiltClientHello
-) -> TLSHandshakeResult:
+def complete_tls13_handshake(sock: socket.socket, built: BuiltClientHello) -> TLSHandshakeResult:
     sock.sendall(built.record)
 
     plaintext_buffer = HandshakeBuffer()
@@ -974,9 +920,7 @@ def complete_tls13_handshake(
             "this script implements TLS 1.3 handshakes only"
         )
     if server_hello.cipher_suite not in CIPHER_SUITES:
-        raise NotImplementedError(
-            f"unsupported TLS 1.3 cipher suite: 0x{server_hello.cipher_suite:04x}"
-        )
+        raise NotImplementedError(f"unsupported TLS 1.3 cipher suite: 0x{server_hello.cipher_suite:04x}")
     if server_hello.key_share_group != built.profile.key_share_group:
         raise NotImplementedError(
             f"server selected key share group {server_hello.key_share_group}; "
@@ -984,9 +928,7 @@ def complete_tls13_handshake(
         )
 
     spec = CIPHER_SUITES[server_hello.cipher_suite]
-    peer_public_key = x25519.X25519PublicKey.from_public_bytes(
-        server_hello.key_share_public
-    )
+    peer_public_key = x25519.X25519PublicKey.from_public_bytes(server_hello.key_share_public)
     shared_secret = built.private_key.exchange(peer_public_key)
 
     zero_secret = b"\x00" * spec.hash_len
@@ -996,12 +938,8 @@ def complete_tls13_handshake(
     handshake_secret = hkdf_extract(derived_early, shared_secret, spec)
 
     server_hello_hash = hash_bytes(bytes(transcript), spec)
-    client_hs_secret = derive_secret(
-        handshake_secret, b"c hs traffic", server_hello_hash, spec
-    )
-    server_hs_secret = derive_secret(
-        handshake_secret, b"s hs traffic", server_hello_hash, spec
-    )
+    client_hs_secret = derive_secret(handshake_secret, b"c hs traffic", server_hello_hash, spec)
+    server_hs_secret = derive_secret(handshake_secret, b"s hs traffic", server_hello_hash, spec)
     client_hs_cipher = TrafficCipher(spec, client_hs_secret)
     server_hs_cipher = TrafficCipher(spec, server_hs_secret)
 
@@ -1016,15 +954,11 @@ def complete_tls13_handshake(
         if content_type == 21:
             raise_for_alert(fragment)
         if content_type != 23:
-            raise ValueError(
-                f"expected encrypted handshake record, got content type {content_type}"
-            )
+            raise ValueError(f"expected encrypted handshake record, got content type {content_type}")
 
         inner_type, plaintext = server_hs_cipher.decrypt_record(header, fragment)
         if inner_type != 22:
-            raise ValueError(
-                f"expected encrypted handshake content, got inner type {inner_type}"
-            )
+            raise ValueError(f"expected encrypted handshake content, got inner type {inner_type}")
         encrypted_buffer.feed(plaintext)
 
         for message in encrypted_buffer.pop_messages():
@@ -1033,12 +967,8 @@ def complete_tls13_handshake(
                 selected_alpn = parse_encrypted_extensions(message)
                 transcript.extend(message)
             elif msg_type == 20:
-                finished_key = hkdf_expand_label(
-                    server_hs_secret, b"finished", b"", spec.hash_len, spec
-                )
-                expected_verify_data = hmac_bytes(
-                    finished_key, hash_bytes(bytes(transcript), spec), spec
-                )
+                finished_key = hkdf_expand_label(server_hs_secret, b"finished", b"", spec.hash_len, spec)
+                expected_verify_data = hmac_bytes(finished_key, hash_bytes(bytes(transcript), spec), spec)
                 received_verify_data = message[4:]
                 if received_verify_data != expected_verify_data:
                     raise ValueError("server Finished verify_data did not match")
@@ -1051,9 +981,7 @@ def complete_tls13_handshake(
             break
 
     app_traffic_hash = hash_bytes(bytes(transcript), spec)
-    client_finished_key = hkdf_expand_label(
-        client_hs_secret, b"finished", b"", spec.hash_len, spec
-    )
+    client_finished_key = hkdf_expand_label(client_hs_secret, b"finished", b"", spec.hash_len, spec)
     client_verify_data = hmac_bytes(client_finished_key, app_traffic_hash, spec)
     client_finished = b"\x14" + u24(len(client_verify_data)) + client_verify_data
 
@@ -1066,22 +994,16 @@ def complete_tls13_handshake(
         old_timeout = sock.gettimeout()
         sock.settimeout(0.75)
 
-        derived_handshake = derive_secret(
-            handshake_secret, b"derived", empty_hash, spec
-        )
+        derived_handshake = derive_secret(handshake_secret, b"derived", empty_hash, spec)
         master_secret = hkdf_extract(derived_handshake, zero_secret, spec)
-        server_app_secret = derive_secret(
-            master_secret, b"s ap traffic", app_traffic_hash, spec
-        )
+        server_app_secret = derive_secret(master_secret, b"s ap traffic", app_traffic_hash, spec)
         server_app_cipher = TrafficCipher(spec, server_app_secret)
 
         content_type, _, fragment, header = read_tls_record(sock)
         if content_type == 23:
             inner_type, plaintext = server_app_cipher.decrypt_record(header, fragment)
             if inner_type == 22 and plaintext:
-                msg_name = HANDSHAKE_NAMES.get(
-                    plaintext[0], f"handshake_{plaintext[0]}"
-                )
+                msg_name = HANDSHAKE_NAMES.get(plaintext[0], f"handshake_{plaintext[0]}")
                 post_handshake_record = msg_name
             else:
                 post_handshake_record = f"inner_type_{inner_type}"
@@ -1213,13 +1135,9 @@ def connect_tcp_via_proxy(
             buffer.extend(chunk)
             if len(buffer) > 65536:
                 raise OSError("proxy CONNECT response is too large")
-        status_line = (
-            bytes(buffer)
-            .split(b"\r\n", 1)[0]
-            .decode(
-                "iso-8859-1",
-                errors="replace",
-            )
+        status_line = bytes(buffer).split(b"\r\n", 1)[0].decode(
+            "iso-8859-1",
+            errors="replace",
         )
         parts = status_line.split()
         if len(parts) < 2 or not parts[1].isdigit() or int(parts[1]) // 100 != 2:
@@ -1230,9 +1148,7 @@ def connect_tcp_via_proxy(
         raise
 
 
-def send_client_hello_only(
-    sock: socket.socket, built: BuiltClientHello
-) -> tuple[int, int, int]:
+def send_client_hello_only(sock: socket.socket, built: BuiltClientHello) -> tuple[int, int, int]:
     sock.sendall(built.record)
     content_type, version, fragment, _ = read_tls_record(sock)
     if content_type == 21:
@@ -1240,9 +1156,7 @@ def send_client_hello_only(
     return content_type, version, len(fragment)
 
 
-def print_fingerprint_report(
-    generated: Fingerprints, targets: dict[str, str], padding_len: int
-) -> None:
+def print_fingerprint_report(generated: Fingerprints, targets: dict[str, str], padding_len: int) -> None:
     target_ja3_full = targets.get("ja3_full", TARGET_JA3_FULL)
     target_ja3 = targets.get("ja3", TARGET_JA3)
     target_ja4 = targets.get("ja4", TARGET_JA4)
@@ -1274,9 +1188,7 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--host", default=DEFAULT_HOST, help="TCP host to connect to.")
-    parser.add_argument(
-        "--port", type=int, default=DEFAULT_PORT, help="TCP port to connect to."
-    )
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="TCP port to connect to.")
     parser.add_argument("--sni", default=None, help="SNI hostname. Defaults to --host.")
     parser.add_argument(
         "--mode",
@@ -1290,29 +1202,11 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="Address family for the TCP connection.",
     )
-    parser.add_argument(
-        "--source-ip",
-        default=None,
-        help="Optional local source IP to bind before connecting.",
-    )
-    parser.add_argument(
-        "--timeout", type=float, default=5.0, help="Socket timeout in seconds."
-    )
-    parser.add_argument(
-        "--ja-file",
-        default="client_ja.txt",
-        help="Wireshark text file containing target JA3/JA4.",
-    )
-    parser.add_argument(
-        "--dump-client-hello",
-        default=None,
-        help="Write the generated TLS record to this file.",
-    )
-    parser.add_argument(
-        "--no-connect",
-        action="store_true",
-        help="Only build and verify ClientHello locally.",
-    )
+    parser.add_argument("--source-ip", default=None, help="Optional local source IP to bind before connecting.")
+    parser.add_argument("--timeout", type=float, default=5.0, help="Socket timeout in seconds.")
+    parser.add_argument("--ja-file", default="client_ja.txt", help="Wireshark text file containing target JA3/JA4.")
+    parser.add_argument("--dump-client-hello", default=None, help="Write the generated TLS record to this file.")
+    parser.add_argument("--no-connect", action="store_true", help="Only build and verify ClientHello locally.")
     return parser.parse_args()
 
 

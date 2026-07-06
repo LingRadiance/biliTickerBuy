@@ -203,6 +203,21 @@ def _header_value(headers: Sequence[tuple[str, str]], name: str) -> str:
     return ""
 
 
+_SENSITIVE_LOG_HEADERS = {
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "set-cookie",
+}
+
+
+def _headers_for_log(headers: Sequence[tuple[str, str]]) -> dict[str, str]:
+    return {
+        name: ("<redacted>" if name.lower() in _SENSITIVE_LOG_HEADERS else value)
+        for name, value in headers
+    }
+
+
 def _normalize_header_items(headers: HeaderItems | None) -> list[tuple[str, str]]:
     if headers is None:
         return []
@@ -280,7 +295,9 @@ def build_request_headers(
     ]
     if content_length is not None:
         user_headers = [
-            (name, value) for name, value in user_headers if name != "content-length"
+            (name, value)
+            for name, value in user_headers
+            if name != "content-length"
         ]
     request_headers.extend(user_headers)
 
@@ -509,12 +526,13 @@ class H2Connection:
             method,
             _header_value(headers, ":path"),
             len(body),
-            str({name: value for name, value in headers}),
+            str(_headers_for_log(headers)),
         )
 
     def _log_response(self, response: H2Response) -> None:
         logger.debug(
-            "H2 response source_ip={} stream_id={} status={} body_len={}",
+            "H2 response source_ip={} stream_id={} status={} "
+            "body_len={}",
             self.config.source_ip or "auto",
             response.stream_id,
             response.status,
@@ -549,9 +567,7 @@ class H2Connection:
                     for name, value in event.headers:
                         if name == ":status":
                             status = int(value)
-                elif (
-                    isinstance(event, TrailersReceived) and event.stream_id == stream_id
-                ):
+                elif isinstance(event, TrailersReceived) and event.stream_id == stream_id:
                     response_headers.extend(event.headers)
                 elif isinstance(event, DataReceived) and event.stream_id == stream_id:
                     response_body.extend(event.data)
