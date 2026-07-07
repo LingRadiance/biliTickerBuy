@@ -88,7 +88,7 @@ def go_settings_tab(header_ui):
 
     def fetch_proxy_from_api(api_url, protocol):
         try:
-            from util.proxy.ProxyApiProvider import fetch_proxy_api
+            from util.proxy.ProxyApiProvider import fetch_proxy_api, mask_proxy_api_url
 
             protocol = (
                 "socks5" if str(protocol).lower() in {"socks", "socks5"} else "http"
@@ -104,7 +104,10 @@ def go_settings_tab(header_ui):
             ConfigDB.insert("https_proxy", ",".join(result.proxies))
             gr.Info(f"已从代理 API 获取 {len(result.proxies)} 个代理。")
             return gr.update(value="\n".join(result.proxies)), gr.update(
-                value=f"✅ 已获取 {len(result.proxies)} 个代理",
+                value=(
+                    f"✅ 已获取 {len(result.proxies)} 个代理\n"
+                    f"API: {mask_proxy_api_url(api_url)}"
+                ),
                 visible=True,
             )
         except Exception as e:
@@ -422,7 +425,7 @@ def go_settings_tab(header_ui):
                     gr.Markdown("### 通过代理 API 获取")
                     proxy_api_url_ui = gr.Textbox(
                         label="代理 API 地址",
-                        placeholder="例如：http://api.youdaili.com/v1/proxy/get?app_key=...&app_secret=...&count=&format=&protocol=",
+                        placeholder="粘贴代理服务商后台生成的提取 API/demo 链接，例如：http://api.youdaili.com/v1/proxy/get?count=&format=&protocol=",
                         value=get_proxy_api_url(),
                     )
                     proxy_api_protocol_ui = gr.Dropdown(
@@ -458,7 +461,7 @@ def go_settings_tab(header_ui):
                           <p><strong>带账号密码的 HTTP 代理示例：</strong><code>http://proxyuser:proxypass@xx.xx.xx.xx:8080</code></p>
                           <p><strong>程序什么时候会用代理：</strong>当抢票流程检测到风控时，会按你填写的顺序切换到下一个代理；当前请求不会在请求层立刻自动重试，下一次抢票重试才会使用新代理。</p>
                           <p><strong>代理失效怎么处理：</strong>同一代理在短时间内连续失败会被暂时冷却；如果所有代理都不可用，程序会按递增时间休息后再试。</p>
-                          <p><strong>代理 API：</strong>保存 API 地址后，程序会在代理全部不可用时自动按并发数请求新代理；请求会自动带上 <code>format=json</code>、<code>count</code> 和所选 <code>protocol</code>。</p>
+                          <p><strong>代理 API：</strong>建议直接粘贴服务商后台生成的提取 API/demo 链接。程序会自动识别常见服务商，优先保留原始参数，只在已知且为空或缺失时补充数量、返回格式或协议参数；识别不到时使用通用解析兜底。</p>
                           <p><strong>建议先测试再开抢：</strong>保存后点击上方“测试代理连通性”，确认代理能正常访问哔哩哔哩接口。</p>
                           <p><strong>自建代理：</strong>如果你没有现成代理，可以自己在 Ubuntu / Debian 服务器上搭建 Squid HTTP 代理。</p>
                           <p><strong>完整搭建说明：</strong><a href="https://github.com/mikumifa/biliTickerBuy/blob/main/docs/proxy-self-hosting.md" target="_blank" rel="noopener noreferrer">GitHub 查看自建代理指南</a></p>
