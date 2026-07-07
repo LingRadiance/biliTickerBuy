@@ -6,6 +6,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from loguru import logger
+
 from cptoken import CTokenRuntimeState, sim_ctoken_state
 
 from util import time_service
@@ -146,7 +148,12 @@ def wait_until_start(time_start: str, warmup=None):
             }
         if not warmed and warmup is not None and remaining <= WARMUP_AT_SECONDS:
             warmed = True
-            for warm_message in warmup() or []:
+            try:
+                warm_messages = warmup() or []
+            except Exception as exc:
+                logger.warning(f"预热/复检失败（忽略）：{exc}")
+                warm_messages = [f"预热/复检失败（忽略）：{exc}"]
+            for warm_message in warm_messages:
                 yield {
                     "message": warm_message,
                     "countdown": countdown_text,
