@@ -241,6 +241,8 @@ _PROXY_CANDIDATE_RE = re.compile(
 
 def normalize_proxy_api_protocol(protocol: str | None) -> str:
     text = str(protocol or "http").strip().lower()
+    if text == "auto":
+        return "auto"
     if text in {"socks", "socks5"}:
         return "socks5"
     return "http"
@@ -434,7 +436,10 @@ def _normalize_proxy_scheme(scheme: str | None, fallback_protocol: str) -> str:
         return "socks4"
     if text in {"http", "https"}:
         return text
-    return normalize_proxy_api_protocol(fallback_protocol)
+    normalized_fallback = normalize_proxy_api_protocol(fallback_protocol)
+    if normalized_fallback == "auto":
+        return "http"
+    return normalized_fallback
 
 
 def _format_proxy_url(
@@ -487,7 +492,7 @@ def _parse_host_port_auth_text(
     if not value:
         return None
 
-    scheme = normalize_proxy_api_protocol(protocol)
+    scheme = _normalize_proxy_scheme(None, protocol)
     scheme_match = re.match(r"^([a-zA-Z][a-zA-Z0-9+.-]*)://(.+)$", value)
     if scheme_match:
         scheme = _normalize_proxy_scheme(scheme_match.group(1), protocol)
@@ -754,8 +759,14 @@ def _collect_from_text(
                     records,
                 )
 
-        candidates = [match.group(0) for match in _URL_CANDIDATE_RE.finditer(line)]
-        candidates.extend(match.group(0) for match in _PROXY_CANDIDATE_RE.finditer(line))
+        url_matches = list(_URL_CANDIDATE_RE.finditer(line))
+        url_spans = [match.span() for match in url_matches]
+        candidates = [match.group(0) for match in url_matches]
+        for match in _PROXY_CANDIDATE_RE.finditer(line):
+            start, end = match.span()
+            if any(span_start <= start and end <= span_end for span_start, span_end in url_spans):
+                continue
+            candidates.append(match.group(0))
         if not candidates:
             candidates.append(line)
         for candidate in candidates:

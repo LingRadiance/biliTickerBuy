@@ -56,9 +56,16 @@ def go_settings_tab(header_ui):
     def get_proxy_api_url():
         return ConfigDB.get("proxyApiUrl") or ""
 
+    def normalize_proxy_api_protocol_choice(protocol):
+        protocol = str(protocol or "auto").strip().lower()
+        if protocol in {"socks", "socks5"}:
+            return "socks5"
+        if protocol == "http":
+            return "http"
+        return "auto"
+
     def get_proxy_api_protocol():
-        protocol = str(ConfigDB.get("proxyApiProtocol") or "http").lower()
-        return "socks5" if protocol in {"socks", "socks5"} else "http"
+        return normalize_proxy_api_protocol_choice(ConfigDB.get("proxyApiProtocol"))
 
     def input_https_proxy(_https_proxy):
         normalized_proxy = _serialize_proxy_text(_https_proxy)
@@ -90,9 +97,7 @@ def go_settings_tab(header_ui):
         try:
             from util.proxy.ProxyApiProvider import fetch_proxy_api, mask_proxy_api_url
 
-            protocol = (
-                "socks5" if str(protocol).lower() in {"socks", "socks5"} else "http"
-            )
+            protocol = normalize_proxy_api_protocol_choice(protocol)
             ConfigDB.insert("proxyApiUrl", str(api_url or "").strip())
             ConfigDB.insert("proxyApiProtocol", protocol)
             count = ConfigDB.get_as_int("queueConcurrencyLimit", 0)
@@ -116,7 +121,7 @@ def go_settings_tab(header_ui):
             )
 
     def save_proxy_api_config(api_url, protocol):
-        protocol = "socks5" if str(protocol).lower() in {"socks", "socks5"} else "http"
+        protocol = normalize_proxy_api_protocol_choice(protocol)
         ConfigDB.insert("proxyApiUrl", str(api_url or "").strip())
         ConfigDB.insert("proxyApiProtocol", protocol)
         gr.Info("代理 API 配置已保存。")
@@ -431,7 +436,8 @@ def go_settings_tab(header_ui):
                     proxy_api_protocol_ui = gr.Dropdown(
                         label="代理地址类型",
                         choices=[
-                            ("HTTP / HTTPS", "http"),
+                            ("自动识别（推荐）", "auto"),
+                            ("HTTP", "http"),
                             ("SOCKS5", "socks5"),
                         ],
                         value=get_proxy_api_protocol(),

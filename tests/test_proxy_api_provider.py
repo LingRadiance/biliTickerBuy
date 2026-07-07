@@ -249,6 +249,36 @@ def test_parse_proxy_api_response_accepts_json_list_root():
     ]
 
 
+def test_parse_proxy_api_response_auto_defaults_bare_proxy_to_http():
+    payload = {
+        "code": 0,
+        "data": [
+            {"ip": "192.0.2.66", "port": 15126},
+            "192.0.2.67:15127",
+        ],
+    }
+
+    assert parse_proxy_api_response(payload, protocol="auto") == [
+        "http://192.0.2.66:15126",
+        "http://192.0.2.67:15127",
+    ]
+
+
+def test_parse_proxy_api_response_auto_keeps_explicit_proxy_scheme():
+    payload = {
+        "code": 0,
+        "data": [
+            "socks5://192.0.2.68:15128",
+            "http://192.0.2.69:15129",
+        ],
+    }
+
+    assert parse_proxy_api_response(payload, protocol="auto") == [
+        "socks5://192.0.2.68:15128",
+        "http://192.0.2.69:15129",
+    ]
+
+
 def test_parse_proxy_api_response_extracts_more_proxy_fields_and_ttl_metadata():
     payload = {
         "code": 0,
