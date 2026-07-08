@@ -1,0 +1,410 @@
+name: Branch Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to create for this branch build"
+        required: true
+        type: string
+      release_name:
+        description: "Release title"
+        required: true
+        type: string
+      target_ref:
+        description: "Branch, tag, or SHA to build"
+        required: true
+        default: "self/bws-park-reservation"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Validate Release Inputs
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.inputs.outputs.release_tag }}
+      release_name: ${{ steps.inputs.outputs.release_name }}
+      target_ref: ${{ steps.inputs.outputs.target_ref }}
+      asset_prefix: ${{ steps.inputs.outputs.asset_prefix }}
+    steps:
+      - name: Normalize inputs
+        id: inputs
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_NAME: ${{ inputs.release_name }}
+          TARGET_REF: ${{ inputs.target_ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RELEASE_TAG}" || -z "${RELEASE_NAME}" || -z "${TARGET_REF}" ]]; then
+            echo "release_tag, release_name, and target_ref are required." >&2
+            exit 1
+          fi
+
+          if [[ "${RELEASE_TAG}" == v* ]]; then
+            echo "Branch release tags must not start with v; v* tags trigger the PyPI workflow." >&2
+            exit 1
+          fi
+
+          ASSET_PREFIX="biliTickerBuy"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "target_ref=${TARGET_REF}" >> "$GITHUB_OUTPUT"
+          echo "asset_prefix=${ASSET_PREFIX}" >> "$GITHUB_OUTPUT"
+
+  create_release:
+    name: Create Prerelease
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.target_ref }}
+
+      - name: Create or update prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          RELEASE_NAME: ${{ needs.validate.outputs.release_name }}
+          TARGET_REF: ${{ needs.validate.outputs.target_ref }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --title "${RELEASE_NAME}" \
+              --target "${TARGET_REF}" \
+              --prerelease \
+              --draft=false \
+              --notes "Branch build for ${TARGET_REF}."
+          else
+            gh release create "${RELEASE_TAG}" \
+              --title "${RELEASE_NAME}" \
+              --target "${TARGET_REF}" \
+              --prerelease \
+              --notes "Branch build for ${TARGET_REF}."
+          fi
+
+  build_and_upload_assets:
+    name: Build ${{ matrix.config.os.filename }}
+    needs:
+      - validate
+      - create_release
+    runs-on: ${{ matrix.config.os.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - os:
+              name: ubuntu-22.04
+              filename: linux_amd64
+          - os:
+              name: ubuntu-22.04-arm
+              filename: linux_arm64
+          - os:
+              name: macos-14
+              filename: macos_arm64
+          - os:
+              name: macos-15-intel
+              filename: macos_intel
+          - os:
+              name: windows-latest
+              filename: windows_amd64
+
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.target_ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+          cache: "pip"
+
+      - name: Upgrade setuptools, wheel, and install requirements
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install pyinstaller~=6.20.0
+          pip install -r requirements.txt
+
+      - name: Build PyInstaller
+        shell: bash
+        run: |
+          pyinstaller main.spec
+
+      - name: Stage updater scripts
+        shell: bash
+        run: |
+          RELEASE_DIR="release/biliTickerBuy"
+          mkdir -p "$RELEASE_DIR"
+
+          if [ "${{ matrix.config.os.filename }}" = "windows_amd64" ]; then
+            cp dist/biliTickerBuy.exe "$RELEASE_DIR/biliTickerBuy.exe"
+            cp assets/updater/update.bat "$RELEASE_DIR/update.bat"
+          elif [[ "${{ matrix.config.os.filename }}" == macos_* ]]; then
+            mv dist/biliTickerBuy.app "$RELEASE_DIR/biliTickerBuy.app"
+            cp assets/updater/update.sh "$RELEASE_DIR/update.sh"
+            chmod +x "$RELEASE_DIR/update.sh"
+          else
+            cp dist/biliTickerBuy "$RELEASE_DIR/biliTickerBuy"
+            cp assets/updater/update.sh "$RELEASE_DIR/update.sh"
+            chmod +x "$RELEASE_DIR/biliTickerBuy"
+            chmod +x "$RELEASE_DIR/update.sh"
+          fi
+
+          cp assets/updater/.env.install "$RELEASE_DIR/.env.install"
+
+      - name: Zip the Build-windows
+        if: matrix.config.os.filename == 'windows_amd64'
+        shell: pwsh
+        run: |
+          $releaseDir = "./release/biliTickerBuy"
+          Compress-Archive `
+            -Path "$releaseDir/biliTickerBuy.exe",
+                  "$releaseDir/update.bat",
+                  "$releaseDir/.env.install" `
+            -DestinationPath "./tmp.zip" `
+            -Force
+
+      - name: Zip the Build-linux
+        if: matrix.config.os.filename != 'windows_amd64' && !startsWith(matrix.config.os.filename, 'macos_')
+        shell: bash
+        run: |
+          cd ./dist
+          zip -r ../tmp.zip biliTickerBuy
+
+      - name: Zip the Build-macos-cli
+        if: startsWith(matrix.config.os.filename, 'macos_')
+        shell: bash
+        run: |
+          cd ./dist
+          zip -r ../tmp-macos-cli.zip biliTickerBuy
+
+      - name: Build DMG-macos
+        if: startsWith(matrix.config.os.filename, 'macos_')
+        shell: bash
+        run: |
+          APP_DIR="./release/biliTickerBuy"
+
+          echo "Disk usage before macOS DMG cleanup:"
+          df -h .
+          df -h /tmp || true
+          du -sh ./build ./dist ./release 2>/dev/null || true
+
+          rm -rf ./dist ./build
+
+          echo "Disk usage after macOS DMG cleanup:"
+          df -h .
+          df -h /tmp || true
+          du -sh ./release 2>/dev/null || true
+
+          SOURCE_KB="$(du -sk "$APP_DIR" | awk '{print $1}')"
+          DMG_SIZE_MB="$(( (SOURCE_KB * 2 + 1024 * 200 + 1023) / 1024 ))"
+
+          echo "Source size: ${SOURCE_KB} KiB"
+          echo "Allocated DMG size: ${DMG_SIZE_MB} MiB"
+
+          hdiutil create \
+            -volname "biliTickerBuy" \
+            -srcfolder "$APP_DIR" \
+            -ov \
+            -fs HFS+ \
+            -format UDRW \
+            -size "${DMG_SIZE_MB}m" \
+            "./tmp-rw.dmg"
+
+          hdiutil convert "./tmp-rw.dmg" \
+            -ov \
+            -format UDZO \
+            -o "./tmp.dmg"
+
+          rm -f ./tmp-rw.dmg
+
+      - name: Prepare release bundle metadata
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          ASSET_PREFIX: ${{ needs.validate.outputs.asset_prefix }}
+          PLATFORM_KEY: ${{ matrix.config.os.filename }}
+        run: |
+          if [[ "${PLATFORM_KEY}" == macos_* ]]; then
+            ASSET_EXT="dmg"
+            SRC_ASSET="tmp.dmg"
+          else
+            ASSET_EXT="zip"
+            SRC_ASSET="tmp.zip"
+          fi
+
+          TMP_ASSET="tmp.${ASSET_EXT}"
+          if [[ "${SRC_ASSET}" != "${TMP_ASSET}" ]]; then
+            mv "${SRC_ASSET}" "${TMP_ASSET}"
+          fi
+
+          ASSET_NAME="${ASSET_PREFIX}_${PLATFORM_KEY}_${RELEASE_TAG}.${ASSET_EXT}"
+
+          echo "Release tag: ${RELEASE_TAG}"
+          echo "Asset name: ${ASSET_NAME}"
+
+          mv "tmp.${ASSET_EXT}" "$ASSET_NAME"
+
+          export ASSET_NAME
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          asset_path = Path(os.environ["ASSET_NAME"])
+          digest = hashlib.sha256()
+          with asset_path.open("rb") as fh:
+              for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                  if chunk:
+                      digest.update(chunk)
+
+          payload = {
+              os.environ["PLATFORM_KEY"]: {
+                  "name": asset_path.name,
+                  "sha256": digest.hexdigest(),
+                  "size": asset_path.stat().st_size,
+              }
+          }
+          Path("release-manifest-entry.json").write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Prepare extra macOS CLI asset
+        if: startsWith(matrix.config.os.filename, 'macos_')
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          ASSET_PREFIX: ${{ needs.validate.outputs.asset_prefix }}
+          PLATFORM_KEY: ${{ matrix.config.os.filename }}
+        run: |
+          EXTRA_ASSET_NAME="${ASSET_PREFIX}_${PLATFORM_KEY}_${RELEASE_TAG}_cli.zip"
+          mv tmp-macos-cli.zip "$EXTRA_ASSET_NAME"
+          echo "$EXTRA_ASSET_NAME" > extra-macos-asset-name.txt
+          export EXTRA_ASSET_NAME
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          metadata_path = Path("release-manifest-entry.json")
+          payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+          platform_key = os.environ["PLATFORM_KEY"]
+          platform_entry = payload[platform_key]
+
+          primary_asset = {
+              "name": platform_entry["name"],
+              "sha256": platform_entry["sha256"],
+              "size": platform_entry["size"],
+              "kind": "primary",
+          }
+
+          extra_asset_path = Path(os.environ["EXTRA_ASSET_NAME"])
+          digest = hashlib.sha256()
+          with extra_asset_path.open("rb") as fh:
+              for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                  if chunk:
+                      digest.update(chunk)
+
+          extra_asset = {
+              "name": extra_asset_path.name,
+              "sha256": digest.hexdigest(),
+              "size": extra_asset_path.stat().st_size,
+              "kind": "cli",
+          }
+
+          platform_entry["assets"] = [primary_asset, extra_asset]
+          metadata_path.write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload binaries to prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          ASSET_NAME="$(python -c "import json; print(json.load(open('release-manifest-entry.json', encoding='utf-8')).popitem()[1]['name'])")"
+          gh release upload "$RELEASE_TAG" "$ASSET_NAME" --clobber
+          if [ -f extra-macos-asset-name.txt ]; then
+            EXTRA_ASSET_NAME="$(cat extra-macos-asset-name.txt)"
+            gh release upload "$RELEASE_TAG" "$EXTRA_ASSET_NAME" --clobber
+          fi
+
+      - name: Upload manifest inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-${{ matrix.config.os.filename }}
+          path: |
+            *.zip
+            *.dmg
+            release-manifest-entry.json
+          if-no-files-found: error
+
+  upload_release_manifest:
+    name: Upload Release Manifest
+    needs:
+      - validate
+      - build_and_upload_assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download manifest inputs
+        uses: actions/download-artifact@v4
+        with:
+          path: release-manifest
+          pattern: release-manifest-*
+
+      - name: Build version-info.json
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path("release-manifest")
+          files = {}
+          for metadata_path in sorted(root.rglob("release-manifest-entry.json")):
+              payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+              if not isinstance(payload, dict):
+                  raise SystemExit(f"Invalid metadata file: {metadata_path}")
+              files.update(payload)
+
+          if not files:
+              raise SystemExit("No release metadata found.")
+
+          manifest = {
+              "version": os.environ["RELEASE_TAG"],
+              "files": files,
+          }
+          Path("version-info.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload version manifest to prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          gh release upload "$RELEASE_TAG" version-info.json --clobber
