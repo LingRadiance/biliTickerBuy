@@ -6,6 +6,7 @@ import random
 import re
 import time
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -37,12 +38,12 @@ BWS_RESERVE_DATES_BY_YEAR = {
 }
 OFFICIAL_TERMINAL_CODES = {
     0: "预约成功",
+    412: "IP 或账号被限流，建议更换 IP 后再试",
     75574: "场次已被抢空",
     76647: "您的预约数已达上限",
 }
 OFFICIAL_RETRYABLE_CODES = {
     -702: "当前预约火爆，请稍后重试",
-    412: "当前预约火爆，请稍后重试",
     76650: "操作频繁，请重试",
     76651: "当前预约火爆，请稍后重试",
     429: "当前预约火爆，请稍后重试",
@@ -84,8 +85,32 @@ def _is_terminal_bws_code(code: int) -> bool:
     return code in TERMINAL_CODES
 
 
+def _bws_result_code(result: dict[str, Any]) -> int:
+    try:
+        return int(result.get("code", result.get("errno", -1)) or 0)
+    except (TypeError, ValueError):
+        return -1
+
+
 def bws_ticket_bind_code_meaning(code: int) -> str:
     return BWS_TICKET_BIND_CODES.get(code, "信息验证失败")
+
+
+def _build_bws_reservation_payload(
+    *,
+    ticket_no: str,
+    reserve_id: int,
+    year: str,
+    csrf_token: str,
+) -> dict[str, Any]:
+    return {
+        "ticket_no": ticket_no,
+        "csrf": csrf_token,
+        "inter_reserve_id": int(reserve_id),
+        "year": year or DEFAULT_BWS_YEAR,
+        "ts": int(time.time() * 1000),
+        "_": random.randint(10000, 99999),
+    }
 
 
 @dataclass(frozen=True)
@@ -388,21 +413,30 @@ class BwsApiClient:
         reserve_id: int,
         year: str = DEFAULT_BWS_YEAR,
     ) -> dict[str, Any]:
-        response = self.session.post(
-            f"{BWS_RESERVE_BASE_URL}/do",
-            data={
-                "ticket_no": ticket_no,
-                "csrf": self.csrf_token,
-                "inter_reserve_id": int(reserve_id),
-                "year": year or DEFAULT_BWS_YEAR,
-                "ts": int(time.time() * 1000),
-                "_": random.randint(10000, 99999),
-            },
-            cookies=self.cookie_dict,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        return _response_json(response)
+        url = f"{BWS_RESERVE_BASE_URL}/do"
+        while True:
+            data = _build_bws_reservation_payload(
+                ticket_no=ticket_no,
+                reserve_id=reserve_id,
+                year=year,
+                csrf_token=self.csrf_token,
+            )
+            response = self.session.post(
+                url,
+                data=data,
+                cookies=self.cookie_dict,
+                timeout=self.timeout,
+            )
+            status_code = getattr(response, "status_code", 200)
+            if status_code == 429:
+                continue
+            if status_code == 412:
+                return {
+                    "code": 412,
+                    "message": "[412] IP 或账号被限流，建议更换 IP 后再试",
+                }
+            response.raise_for_status()
+            return _response_json(response)
 
 
 def _make_bws_client(
@@ -410,9 +444,10 @@ def _make_bws_client(
     cookies: list[dict[str, Any]] | dict[str, Any] | None = None,
     cookies_path: str | Path | None = None,
     proxy: str = "none",
+    timeout: float = 10.0,
 ) -> BwsApiClient:
     cookie_list = _resolve_bws_cookies(cookies=cookies, cookies_path=cookies_path)
-    return BwsApiClient(cookie_list, proxy=proxy)
+    return BwsApiClient(cookie_list, proxy=proxy, timeout=timeout)
 
 
 def fetch_bws_reserve_info(
@@ -436,6 +471,26 @@ def fetch_bws_reserve_info(
         reserve_dates=reserve_dates,
         reserve_type=reserve_type,
         year=year,
+    )
+
+
+def fetch_bws_goods_info(
+    *,
+    reserve_dates: str = "",
+    year: str = "",
+    cookies: list[dict[str, Any]] | dict[str, Any] | None = None,
+    cookies_path: str | Path | None = None,
+    proxy: str = "none",
+    request: BwsApiClient | None = None,
+) -> dict[str, Any]:
+    return fetch_bws_reserve_info(
+        reserve_dates=reserve_dates,
+        reserve_type=1,
+        year=year,
+        cookies=cookies,
+        cookies_path=cookies_path,
+        proxy=proxy,
+        request=request,
     )
 
 
@@ -643,6 +698,84 @@ def _configured_start_time(config: BwsConfig, activity: dict[str, Any]) -> str:
     return datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _normalize_bws_proxy_strategy(value: str | None) -> str:
+    strategy = str(value or "balanced").strip().lower()
+    if strategy not in {"balanced", "queue", "local_fanout"}:
+        return "balanced"
+    return strategy
+
+
+def _bws_proxy_slots(config: BwsConfig) -> list[str]:
+    proxies = ProxyManager.parse_proxy_list(config.https_proxys or "none")
+    if not proxies:
+        proxies = ["none"]
+    thread_count = max(1, int(config.thread_count or 1))
+    strategy = _normalize_bws_proxy_strategy(config.proxy_assignment_strategy)
+    if strategy == "local_fanout":
+        return proxies
+    if strategy == "queue":
+        return proxies[: min(thread_count, len(proxies))]
+    return [proxies[index % len(proxies)] for index in range(thread_count)]
+
+
+def _select_bws_attempt_result(results: list[dict[str, Any]]) -> dict[str, Any]:
+    if not results:
+        return {"code": -1, "message": "no BW reservation result"}
+    for result in results:
+        if _bws_result_code(result) == 0:
+            return result
+    for result in results:
+        if _is_terminal_bws_code(_bws_result_code(result)):
+            return result
+    for result in results:
+        if not _is_known_bws_code(_bws_result_code(result)):
+            return result
+    return results[0]
+
+
+def _submit_bws_reservation_attempt(
+    *,
+    base_client: BwsApiClient,
+    config: BwsConfig,
+    ticket_no: str,
+    year: str,
+    proxy_slots: list[str],
+) -> dict[str, Any]:
+    if len(proxy_slots) <= 1 and _normalize_bws_proxy_strategy(
+        config.proxy_assignment_strategy
+    ) != "local_fanout":
+        return base_client.make_reservation(
+            reserve_id=config.reserve_id,
+            ticket_no=ticket_no,
+            year=year,
+        )
+
+    def submit_with_proxy(proxy: str) -> dict[str, Any]:
+        client = _make_bws_client(
+            cookies=base_client.cookies,
+            proxy=proxy,
+            timeout=getattr(base_client, "timeout", 10.0),
+        )
+        return client.make_reservation(
+            reserve_id=config.reserve_id,
+            ticket_no=ticket_no,
+            year=year,
+        )
+
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(
+        max_workers=max(1, len(proxy_slots)),
+        thread_name_prefix="btb-bws-reserve",
+    ) as executor:
+        futures = [executor.submit(submit_with_proxy, proxy) for proxy in proxy_slots]
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                results.append({"code": -1, "message": str(exc)})
+    return _select_bws_attempt_result(results)
+
+
 def bws_reserve_stream(config: BwsConfig) -> Generator[str, None, None]:
     if int(config.reserve_id or 0) <= 0:
         raise ValueError("reserve_id is required")
@@ -717,15 +850,22 @@ def bws_reserve_stream(config: BwsConfig) -> Generator[str, None, None]:
 
     retry_limit = max(0, int(config.retry_limit or 0))
     interval_seconds = max(0, int(config.interval or 0)) / 1000.0
+    proxy_slots = _bws_proxy_slots(config)
+    strategy = _normalize_bws_proxy_strategy(config.proxy_assignment_strategy)
+    if len(proxy_slots) > 1:
+        masked_slots = ", ".join(ProxyManager.mask_proxy_value(proxy) for proxy in proxy_slots)
+        yield f"BW 并发策略: {strategy} | 并发出口: {masked_slots}"
     attempt = 0
     while retry_limit <= 0 or attempt < retry_limit:
         attempt += 1
-        result = client.make_reservation(
-            reserve_id=config.reserve_id,
+        result = _submit_bws_reservation_attempt(
+            base_client=client,
+            config=config,
             ticket_no=ticket_no,
             year=year,
+            proxy_slots=proxy_slots,
         )
-        code = int(result.get("code", result.get("errno", -1)) or 0)
+        code = _bws_result_code(result)
         message = str(result.get("message", result.get("msg", "")) or "")
         if not _is_known_bws_code(code):
             yield "{0} 检测到未标记 BW 返回码: [{1}]，已自动按可重试处理。完整返回: {2}".format(

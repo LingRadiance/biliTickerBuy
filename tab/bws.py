@@ -389,6 +389,19 @@ def _current_bws_proxy_config() -> str:
     )
 
 
+def normalize_bws_proxy_assignment_strategy(value: str | None) -> str:
+    strategy = str(value or "balanced").strip().lower()
+    if strategy not in {"balanced", "queue", "local_fanout"}:
+        return "balanced"
+    return strategy
+
+
+def _current_bws_proxy_assignment_strategy() -> str:
+    return normalize_bws_proxy_assignment_strategy(
+        ConfigDB.get("proxyAssignmentStrategy") or "balanced"
+    )
+
+
 def _build_bws_task_log_path(reserve_id: int, reserve_date: str, year: str) -> str:
     suffix = reserve_date or year or "auto"
     filename = f"bws_{reserve_id}_{suffix}_{uuid.uuid4().hex[:8]}.log"
@@ -492,6 +505,14 @@ def bws_tab():
                     precision=0,
                     scale=2,
                 )
+                thread_count = gr.Number(
+                    label="并发线程数",
+                    value=1,
+                    minimum=1,
+                    maximum=10,
+                    precision=0,
+                    scale=1,
+                )
             with gr.Row(elem_classes="!justify-end"):
                 start_btn = gr.Button("开始预约", elem_classes="btb-strong-button")
 
@@ -555,6 +576,7 @@ def bws_tab():
         _year,
         _interval,
         _retry_limit,
+        _thread_count,
     ):
         _require_login()
         reserve_id_text = str(_reserve_id or "").strip()
@@ -580,6 +602,8 @@ def bws_tab():
             year=year_value,
             interval=int(_interval or 0),
             retry_limit=int(_retry_limit or 0),
+            thread_count=max(1, int(_thread_count or 1)),
+            proxy_assignment_strategy=_current_bws_proxy_assignment_strategy(),
             cookies_path=GLOBAL_COOKIE_PATH,
             https_proxys=_current_bws_proxy_config(),
             show_detail=True,
@@ -635,6 +659,7 @@ def bws_tab():
             year,
             interval,
             retry_limit,
+            thread_count,
         ],
         outputs=task_panel,
     ).then(

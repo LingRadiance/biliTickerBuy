@@ -114,12 +114,12 @@ def test_extract_official_bws_schedule_parts_from_minified_js():
 def test_bws_reservation_code_table_matches_official_2026_page():
     assert bws.OFFICIAL_TERMINAL_CODES == {
         0: "预约成功",
+        412: "IP 或账号被限流，建议更换 IP 后再试",
         75574: "场次已被抢空",
         76647: "您的预约数已达上限",
     }
     assert bws.OFFICIAL_RETRYABLE_CODES == {
         -702: "当前预约火爆，请稍后重试",
-        412: "当前预约火爆，请稍后重试",
         429: "当前预约火爆，请稍后重试",
         76650: "操作频繁，请重试",
         76651: "当前预约火爆，请稍后重试",
@@ -212,6 +212,20 @@ def test_bws_terminal_task_passes_proxy_config_to_subcommand():
     assert args[args.index("--https-proxys") + 1] == "none,http://127.0.0.1:8080"
 
 
+def test_bws_terminal_task_passes_concurrency_config_to_subcommand():
+    args = Bws(
+        BwsConfig(
+            reserve_id=1001,
+            reserve_dates="20260710",
+            thread_count=3,
+            proxy_assignment_strategy="local_fanout",
+        )
+    ).to_cli_args()
+
+    assert args[args.index("--thread-count") + 1] == "3"
+    assert args[args.index("--proxy-assignment-strategy") + 1] == "local_fanout"
+
+
 def test_bws_api_client_applies_proxy_to_session(monkeypatch):
     class FakeSession:
         def __init__(self):
@@ -283,6 +297,97 @@ def test_make_reservation_adds_timestamp_and_random_nonce(monkeypatch):
     assert captured["data"]["_"] == 54321
 
 
+def test_make_reservation_retries_http_429_with_fresh_nonce(monkeypatch):
+    captured_payloads = []
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload or {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        headers = {}
+
+        def __init__(self):
+            self.responses = [
+                FakeResponse(429),
+                FakeResponse(200, {"code": 0, "message": "ok"}),
+            ]
+
+        def post(self, url, data, cookies, timeout):
+            captured_payloads.append(dict(data))
+            return self.responses.pop(0)
+
+    monkeypatch.setattr(bws.requests, "Session", FakeSession)
+    times = iter([1000.001, 1000.222])
+    nonces = iter([11111, 22222])
+    monkeypatch.setattr(bws.time, "time", lambda: next(times))
+    monkeypatch.setattr(bws.random, "randint", lambda start, end: next(nonces))
+
+    client = BwsApiClient([{"name": "bili_jct", "value": "csrf-token"}])
+    result = client.make_reservation(
+        ticket_no="TICKET-0710",
+        reserve_id=1001,
+        year="202601",
+    )
+
+    assert result["code"] == 0
+    assert captured_payloads[0]["ts"] == 1000001
+    assert captured_payloads[0]["_"] == 11111
+    assert captured_payloads[1]["ts"] == 1000222
+    assert captured_payloads[1]["_"] == 22222
+
+
+def test_make_reservation_returns_terminal_result_for_http_412(monkeypatch):
+    class FakeResponse:
+        status_code = 412
+
+        def json(self):
+            raise AssertionError("HTTP 412 response body should not be required")
+
+    class FakeSession:
+        headers = {}
+
+        def post(self, url, data, cookies, timeout):
+            return FakeResponse()
+
+    monkeypatch.setattr(bws.requests, "Session", FakeSession)
+
+    client = BwsApiClient([{"name": "bili_jct", "value": "csrf-token"}])
+    result = client.make_reservation(
+        ticket_no="TICKET-0710",
+        reserve_id=1001,
+        year="202601",
+    )
+
+    assert result["code"] == 412
+    assert "IP 或账号被限流" in result["message"]
+
+
+def test_fetch_bws_goods_info_requests_goods_reserve_type():
+    captured = {}
+
+    class FakeClient:
+        def get_reservation_info(self, **kwargs):
+            captured.update(kwargs)
+            return {"reserve_list": {}}
+
+    result = bws.fetch_bws_goods_info(
+        reserve_dates="20260710",
+        year="202601",
+        request=FakeClient(),
+    )
+
+    assert result == {"reserve_list": {}}
+    assert captured["reserve_type"] == 1
+
+
 def test_effective_bws_reserve_begin_time_uses_common_time_for_non_vip_ticket():
     activity = {
         "reserve_begin_time": 100,
@@ -326,6 +431,214 @@ def test_bws_reserve_stream_retries_official_hot_status(monkeypatch):
     assert sum("预约结果" in message for message in logs) == 3
     assert any("当前预约火爆，请稍后重试" in message for message in logs)
     assert not any("仅限女性" in message for message in logs)
+
+
+def test_bws_reserve_stream_stops_on_http_412_terminal_status(monkeypatch):
+    attempts = 0
+
+    class FakeClient:
+        cookies = [{"name": "bili_jct", "value": "csrf"}]
+
+        def get_username(self):
+            return "tester"
+
+        def get_reservation_info(self, **kwargs):
+            return _reservation_info()
+
+        def get_my_reservations(self, **kwargs):
+            return {"reserve_list": {}}
+
+        def make_reservation(self, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            return {"code": 412, "message": "[412] IP 或账号被限流，建议更换 IP 后再试"}
+
+    monkeypatch.setattr(bws, "_make_bws_client", lambda **kwargs: FakeClient())
+
+    logs = list(
+        bws.bws_reserve_stream(
+            BwsConfig(
+                reserve_id=1001,
+                reserve_dates="20260710",
+                time_start="2020-01-01 00:00:00",
+                retry_limit=3,
+            )
+        )
+    )
+
+    assert attempts == 1
+    assert sum("预约结果" in message for message in logs) == 1
+    assert any("IP 或账号被限流" in message for message in logs)
+
+
+def test_bws_reserve_stream_balanced_strategy_cycles_proxy_slots(monkeypatch):
+    submitted_proxies = []
+
+    class FakeClient:
+        def __init__(self, proxy="none"):
+            self.proxy = proxy
+            self.cookies = [{"name": "bili_jct", "value": "csrf"}]
+
+        def get_username(self):
+            return "tester"
+
+        def get_reservation_info(self, **kwargs):
+            return _reservation_info()
+
+        def get_my_reservations(self, **kwargs):
+            return {"reserve_list": {}}
+
+        def make_reservation(self, **kwargs):
+            submitted_proxies.append(self.proxy)
+            return {"code": 76650, "message": "busy"}
+
+    monkeypatch.setattr(
+        bws,
+        "_make_bws_client",
+        lambda **kwargs: FakeClient(kwargs.get("proxy", "none")),
+    )
+
+    list(
+        bws.bws_reserve_stream(
+            BwsConfig(
+                reserve_id=1001,
+                reserve_dates="20260710",
+                time_start="2020-01-01 00:00:00",
+                retry_limit=1,
+                interval=0,
+                thread_count=3,
+                https_proxys="none,http://127.0.0.1:8080",
+                proxy_assignment_strategy="balanced",
+            )
+        )
+    )
+
+    assert sorted(submitted_proxies) == [
+        "http://127.0.0.1:8080",
+        "none",
+        "none",
+    ]
+
+
+def test_bws_reserve_stream_queue_strategy_caps_to_proxy_count(monkeypatch):
+    submitted_proxies = []
+
+    class FakeClient:
+        def __init__(self, proxy="none"):
+            self.proxy = proxy
+            self.cookies = [{"name": "bili_jct", "value": "csrf"}]
+
+        def get_username(self):
+            return "tester"
+
+        def get_reservation_info(self, **kwargs):
+            return _reservation_info()
+
+        def get_my_reservations(self, **kwargs):
+            return {"reserve_list": {}}
+
+        def make_reservation(self, **kwargs):
+            submitted_proxies.append(self.proxy)
+            return {"code": 76650, "message": "busy"}
+
+    monkeypatch.setattr(
+        bws,
+        "_make_bws_client",
+        lambda **kwargs: FakeClient(kwargs.get("proxy", "none")),
+    )
+
+    list(
+        bws.bws_reserve_stream(
+            BwsConfig(
+                reserve_id=1001,
+                reserve_dates="20260710",
+                time_start="2020-01-01 00:00:00",
+                retry_limit=1,
+                interval=0,
+                thread_count=5,
+                https_proxys="none,http://127.0.0.1:8080",
+                proxy_assignment_strategy="queue",
+            )
+        )
+    )
+
+    assert sorted(submitted_proxies) == ["http://127.0.0.1:8080", "none"]
+
+
+def test_bws_reserve_stream_local_fanout_uses_full_proxy_pool(monkeypatch):
+    submitted_proxies = []
+
+    class FakeClient:
+        def __init__(self, proxy="none"):
+            self.proxy = proxy
+            self.cookies = [{"name": "bili_jct", "value": "csrf"}]
+
+        def get_username(self):
+            return "tester"
+
+        def get_reservation_info(self, **kwargs):
+            return _reservation_info()
+
+        def get_my_reservations(self, **kwargs):
+            return {"reserve_list": {}}
+
+        def make_reservation(self, **kwargs):
+            submitted_proxies.append(self.proxy)
+            if self.proxy == "http://127.0.0.1:8080":
+                return {"code": 0, "message": "ok"}
+            return {"code": 76650, "message": "busy"}
+
+    monkeypatch.setattr(
+        bws,
+        "_make_bws_client",
+        lambda **kwargs: FakeClient(kwargs.get("proxy", "none")),
+    )
+
+    logs = list(
+        bws.bws_reserve_stream(
+            BwsConfig(
+                reserve_id=1001,
+                reserve_dates="20260710",
+                time_start="2020-01-01 00:00:00",
+                retry_limit=1,
+                interval=0,
+                thread_count=1,
+                https_proxys="none,http://127.0.0.1:8080",
+                proxy_assignment_strategy="local_fanout",
+            )
+        )
+    )
+
+    assert sorted(submitted_proxies) == ["http://127.0.0.1:8080", "none"]
+    assert any("[0]" in message and "ok" in message for message in logs)
+
+
+def test_bws_parallel_attempt_reuses_base_client_timeout(monkeypatch):
+    captured_timeouts = []
+
+    class FakeClient:
+        def __init__(self, *, timeout=10.0):
+            self.timeout = timeout
+            self.cookies = [{"name": "bili_jct", "value": "csrf"}]
+
+        def make_reservation(self, **kwargs):
+            return {"code": 76650, "message": "busy"}
+
+    def fake_make_bws_client(**kwargs):
+        captured_timeouts.append(kwargs.get("timeout"))
+        return FakeClient(timeout=kwargs.get("timeout", 10.0))
+
+    monkeypatch.setattr(bws, "_make_bws_client", fake_make_bws_client)
+
+    bws._submit_bws_reservation_attempt(
+        base_client=FakeClient(timeout=3.5),
+        config=BwsConfig(reserve_id=1001, proxy_assignment_strategy="balanced"),
+        ticket_no="TICKET-0710",
+        year="202601",
+        proxy_slots=["none", "http://127.0.0.1:8080"],
+    )
+
+    assert captured_timeouts == [3.5, 3.5]
 
 
 def test_bws_reserve_stream_marks_unknown_codes_retryable(monkeypatch):

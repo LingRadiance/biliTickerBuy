@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .auth import get_login_state, login_with_cookies, poll_qr_login, start_qr_login
 from .bws import (
+    fetch_bws_goods_info,
     fetch_bws_my_reservations,
     fetch_bws_reserve_info,
     get_bws_reserve_context,
@@ -46,6 +47,7 @@ __all__ = [
     "build_ticket_config_from_selection",
     "cancel_managed_buy",
     "delete_managed_buy",
+    "fetch_bws_goods_info",
     "fetch_bws_my_reservations",
     "fetch_bws_reserve_info",
     "fetch_addresses",

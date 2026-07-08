@@ -84,6 +84,24 @@ class BwsConfig(BasicConfig):
     )
     """Maximum submit attempts; 0 means retry until terminal result."""
 
+    thread_count: int = config_field(
+        1,
+        env="BTB_BWS_THREAD_COUNT",
+        runtime="thread_count",
+        cli="--thread-count",
+        cast=int,
+    )
+    """Number of concurrent BW reservation submitters per attempt."""
+
+    proxy_assignment_strategy: str = config_field(
+        "balanced",
+        env="BTB_BWS_PROXY_ASSIGNMENT_STRATEGY",
+        runtime="proxy_assignment_strategy",
+        cli="--proxy-assignment-strategy",
+        cast=lambda value: str(value or "balanced").lower(),
+    )
+    """BW proxy concurrency strategy: balanced, queue, or local_fanout."""
+
     cookies_path: str = config_field(
         "",
         env="BTB_BWS_COOKIES_PATH",
