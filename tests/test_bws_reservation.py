@@ -14,6 +14,7 @@ from interface.bws import (
     verify_bws_ticket_activation,
 )
 from task.bws import Bws
+from tab.bws import build_bws_proxy_config
 
 
 def _reservation_info():
@@ -111,6 +112,8 @@ def test_extract_official_bws_schedule_parts_from_minified_js():
 
 
 def test_bws_reserve_stream_stops_when_already_reserved(monkeypatch):
+    captured = {}
+
     class FakeClient:
         cookies = [{"name": "bili_jct", "value": "csrf"}]
 
@@ -126,18 +129,24 @@ def test_bws_reserve_stream_stops_when_already_reserved(monkeypatch):
         def make_reservation(self, **kwargs):
             raise AssertionError("should not submit duplicate reservation")
 
-    monkeypatch.setattr(bws, "_make_bws_client", lambda **kwargs: FakeClient())
+    def fake_make_bws_client(**kwargs):
+        captured.update(kwargs)
+        return FakeClient()
+
+    monkeypatch.setattr(bws, "_make_bws_client", fake_make_bws_client)
 
     logs = list(
         bws.bws_reserve_stream(
             BwsConfig(
                 reserve_id=1001,
                 reserve_dates="20260710",
+                https_proxys="http://127.0.0.1:8080",
                 retry_limit=1,
             )
         )
     )
 
+    assert captured["proxy"] == "http://127.0.0.1:8080"
     assert any("已在当前账号的预约列表中" in message for message in logs)
 
 
@@ -160,6 +169,46 @@ def test_bws_terminal_task_uses_bws_subcommand():
     assert args[args.index("--reserve-date") + 1] == "20260710"
     assert args[args.index("--year") + 1] == "202601"
     assert args[args.index("--cookies-path") + 1] == "cookies.json"
+
+
+def test_bws_terminal_task_passes_proxy_config_to_subcommand():
+    args = Bws(
+        BwsConfig(
+            reserve_id=1001,
+            reserve_dates="20260710",
+            https_proxys="none,http://127.0.0.1:8080",
+        )
+    ).to_cli_args()
+
+    assert args[args.index("--https-proxys") + 1] == "none,http://127.0.0.1:8080"
+
+
+def test_bws_api_client_applies_proxy_to_session(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.headers = {}
+            self.proxies = None
+            self.trust_env = True
+
+    fake_session = FakeSession()
+    monkeypatch.setattr(bws.requests, "Session", lambda: fake_session)
+
+    BwsApiClient(
+        [{"name": "bili_jct", "value": "csrf-token"}],
+        proxy="http://127.0.0.1:8080",
+    )
+
+    assert fake_session.trust_env is False
+    assert fake_session.proxies == {
+        "http": "http://127.0.0.1:8080",
+        "https": "http://127.0.0.1:8080",
+    }
+
+
+def test_build_bws_proxy_config_includes_direct_when_enabled():
+    assert build_bws_proxy_config("http://127.0.0.1:8080", include_direct=True) == (
+        "none,http://127.0.0.1:8080"
+    )
 
 
 def test_make_reservation_adds_timestamp_and_random_nonce(monkeypatch):

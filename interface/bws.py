@@ -17,6 +17,7 @@ import requests
 from app_cmd.config.BwsConfig import BwsConfig
 from interface.common import _resolve_cookie_list
 from task.buy_helpers import wait_until_start
+from util.proxy.ProxyManager import ProxyManager
 
 BWS_RESERVE_BASE_URL = "https://api.bilibili.com/x/activity/bws/online/park/reserve"
 BWS_MY_RESERVE_URL = "https://api.bilibili.com/x/activity/bws/online/park/myreserve"
@@ -283,14 +284,22 @@ def _raise_api_error(payload: dict[str, Any], *, action: str) -> None:
 class BwsApiClient:
     """Starsbon_bws_ticket style BW park API client."""
 
-    def __init__(self, cookies: list[dict[str, Any]], *, timeout: float = 10.0):
+    def __init__(
+        self,
+        cookies: list[dict[str, Any]],
+        *,
+        timeout: float = 10.0,
+        proxy: str = "none",
+    ):
         self.cookies = cookies
         self.cookie_dict = _cookies_to_dict(cookies)
         self.csrf_token = self.cookie_dict.get("bili_jct", "")
         if not self.csrf_token:
             raise RuntimeError("Cookie 中缺少 bili_jct，无法调用 BW 乐园预约接口")
         self.timeout = timeout
+        self.proxy_manager = ProxyManager(proxy or "none")
         self.session = requests.Session()
+        self.proxy_manager.apply_to_session(self.session)
         self.session.headers.update(
             {
                 "User-Agent": BWS_USER_AGENT,
@@ -388,9 +397,10 @@ def _make_bws_client(
     *,
     cookies: list[dict[str, Any]] | dict[str, Any] | None = None,
     cookies_path: str | Path | None = None,
+    proxy: str = "none",
 ) -> BwsApiClient:
     cookie_list = _resolve_bws_cookies(cookies=cookies, cookies_path=cookies_path)
-    return BwsApiClient(cookie_list)
+    return BwsApiClient(cookie_list, proxy=proxy)
 
 
 def fetch_bws_reserve_info(
@@ -400,11 +410,16 @@ def fetch_bws_reserve_info(
     year: str = "",
     cookies: list[dict[str, Any]] | dict[str, Any] | None = None,
     cookies_path: str | Path | None = None,
+    proxy: str = "none",
     request: BwsApiClient | None = None,
 ) -> dict[str, Any]:
     year = year or default_bws_year()
     reserve_dates = resolve_bws_reserve_dates(reserve_dates, year)
-    client = request or _make_bws_client(cookies=cookies, cookies_path=cookies_path)
+    client = request or _make_bws_client(
+        cookies=cookies,
+        cookies_path=cookies_path,
+        proxy=proxy,
+    )
     return client.get_reservation_info(
         reserve_dates=reserve_dates,
         reserve_type=reserve_type,
@@ -417,9 +432,14 @@ def fetch_bws_my_reservations(
     year: str = "",
     cookies: list[dict[str, Any]] | dict[str, Any] | None = None,
     cookies_path: str | Path | None = None,
+    proxy: str = "none",
     request: BwsApiClient | None = None,
 ) -> dict[str, Any]:
-    client = request or _make_bws_client(cookies=cookies, cookies_path=cookies_path)
+    client = request or _make_bws_client(
+        cookies=cookies,
+        cookies_path=cookies_path,
+        proxy=proxy,
+    )
     return client.get_my_reservations(year=year or default_bws_year())
 
 
@@ -619,8 +639,14 @@ def bws_reserve_stream(config: BwsConfig) -> Generator[str, None, None]:
         config.reserve_dates or config.reserve_date,
         year,
     )
-    client = _make_bws_client(cookies_path=config.cookies_path or None)
+    client = _make_bws_client(
+        cookies_path=config.cookies_path or None,
+        proxy=config.https_proxys or "none",
+    )
     yield f"当前账号: {client.get_username()}"
+    proxy_manager = getattr(client, "proxy_manager", None)
+    if proxy_manager is not None:
+        yield f"当前代理: {proxy_manager.current_proxy_display}"
 
     info = client.get_reservation_info(
         reserve_dates=reserve_dates,
@@ -734,10 +760,15 @@ def get_bws_reserve_context(
     year: str = "",
     cookies: list[dict[str, Any]] | dict[str, Any] | None = None,
     cookies_path: str | Path | None = None,
+    proxy: str = "none",
 ) -> dict[str, Any]:
     year = year or default_bws_year()
     reserve_dates = resolve_bws_reserve_dates(reserve_dates, year)
-    client = _make_bws_client(cookies=cookies, cookies_path=cookies_path)
+    client = _make_bws_client(
+        cookies=cookies,
+        cookies_path=cookies_path,
+        proxy=proxy,
+    )
     info = client.get_reservation_info(
         reserve_dates=reserve_dates,
         reserve_type=reserve_type,

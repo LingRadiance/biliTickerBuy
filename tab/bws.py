@@ -18,7 +18,8 @@ from interface.bws import (
 )
 from tab.log import refresh_task_panel, render_task_manager_panel, visible_task_entries
 from task.bws import bws_new_terminal
-from util import GLOBAL_COOKIE_PATH, GlobalStatusInstance, LOG_DIR, set_main_request
+from util import ConfigDB, GLOBAL_COOKIE_PATH, GlobalStatusInstance, LOG_DIR, set_main_request
+from util.proxy.ProxyManager import ProxyManager
 from util.request.BiliRequest import BiliRequest
 from util.request.CookieManager import CookieManager
 
@@ -373,6 +374,21 @@ def _date_dropdown_update(reserve_dates_value: str, year_value: str):
     )
 
 
+def build_bws_proxy_config(proxy_string: str | None, *, include_direct: bool) -> str:
+    proxies = ProxyManager.parse_proxy_list(
+        proxy_string,
+        include_direct_fallback=include_direct,
+    )
+    return ",".join(proxies or ["none"])
+
+
+def _current_bws_proxy_config() -> str:
+    return build_bws_proxy_config(
+        ConfigDB.get("https_proxy") or "",
+        include_direct=ConfigDB.get_as_bool("proxyIncludeDirect", True),
+    )
+
+
 def _build_bws_task_log_path(reserve_id: int, reserve_date: str, year: str) -> str:
     suffix = reserve_date or year or "auto"
     filename = f"bws_{reserve_id}_{suffix}_{uuid.uuid4().hex[:8]}.log"
@@ -518,6 +534,7 @@ def bws_tab():
             reserve_type=int(_reserve_type if _reserve_type is not None else -1),
             year=year_value,
             cookies_path=GLOBAL_COOKIE_PATH,
+            proxy=_current_bws_proxy_config(),
         )
         username = context.get("username", "未知账号")
         used_dates = context.get("reserve_dates", reserve_dates_value)
@@ -564,6 +581,7 @@ def bws_tab():
             interval=int(_interval or 0),
             retry_limit=int(_retry_limit or 0),
             cookies_path=GLOBAL_COOKIE_PATH,
+            https_proxys=_current_bws_proxy_config(),
             show_detail=True,
         )
         log_file_path = _build_bws_task_log_path(
