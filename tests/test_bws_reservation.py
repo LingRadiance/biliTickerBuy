@@ -111,6 +111,35 @@ def test_extract_official_bws_schedule_parts_from_minified_js():
     assert _extract_act_days(sample) == ["20260710", "20260711", "20260712"]
 
 
+def test_bws_reservation_code_table_matches_official_2026_page():
+    assert bws.OFFICIAL_TERMINAL_CODES == {
+        0: "预约成功",
+        75574: "场次已被抢空",
+        76647: "您的预约数已达上限",
+    }
+    assert bws.OFFICIAL_RETRYABLE_CODES == {
+        -702: "当前预约火爆，请稍后重试",
+        412: "当前预约火爆，请稍后重试",
+        429: "当前预约火爆，请稍后重试",
+        76650: "操作频繁，请重试",
+        76651: "当前预约火爆，请稍后重试",
+    }
+    assert bws.HISTORICAL_TERMINAL_CODES == {76674: "预约已达上限"}
+    assert bws.HISTORICAL_RETRYABLE_CODES == {75637: "尚未开放"}
+
+
+def test_bws_ticket_bind_code_table_matches_official_2026_page():
+    assert bws.BWS_TICKET_BIND_CODES == {
+        0: "门票认证成功",
+        75636: "票务身份信息校验不通过",
+        75639: "购票所用证件信息，已被绑定至其他账户",
+        75642: "当前账号已经被绑定",
+        75643: "当前证件下，未查询到购票信息",
+        76645: "邀请函用户暂不支持门票认证相关功能",
+    }
+    assert bws.bws_ticket_bind_code_meaning(88001) == "信息验证失败"
+
+
 def test_bws_reserve_stream_stops_when_already_reserved(monkeypatch):
     captured = {}
 
