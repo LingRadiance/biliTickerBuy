@@ -16,7 +16,12 @@ from interface.bws import (
     get_bws_reserve_context,
     resolve_bws_reserve_dates,
 )
-from tab.log import refresh_task_panel, render_task_manager_panel, visible_task_entries
+from tab.log import (
+    refresh_task_panel,
+    render_task_manager_panel,
+    stop_all_running_tasks,
+    visible_task_entries,
+)
 from task.bws import bws_new_terminal
 from util import ConfigDB, GLOBAL_COOKIE_PATH, GlobalStatusInstance, LOG_DIR, set_main_request
 from util.proxy.ProxyManager import ProxyManager
@@ -65,7 +70,7 @@ def _validate_cookies_with_nav(cookies: list[dict] | None) -> tuple[bool, str, s
     if not _cookie_value(cookies, "SESSDATA"):
         return False, "Cookie 缺少 SESSDATA，请重新登录。", None
     if not _cookie_value(cookies, "bili_jct"):
-        return False, "Cookie 缺少 bili_jct，无法进行 BW 乐园预约。", None
+        return False, "Cookie 缺少 bili_jct，无法进行 BW 名额助手。", None
 
     headers = {
         "accept": "*/*",
@@ -98,7 +103,7 @@ def _validate_cookies_with_nav(cookies: list[dict] | None) -> tuple[bool, str, s
     uid = str(data.get("mid") or _cookie_value(cookies, "DedeUserID") or "").strip()
     if not username:
         return False, "Cookie 验证通过但未返回用户名，请重新登录。", uid or None
-    return True, f"当前账号：{username}", uid or None
+    return True, f"使用账号：{username}", uid or None
 
 
 def _get_account_choices() -> list[str]:
@@ -179,7 +184,7 @@ def _current_login_message() -> str:
 
 def _require_login() -> None:
     message = _current_login_message()
-    if "当前账号：" not in message:
+    if "使用账号：" not in message:
         raise gr.Error(message)
 
 
@@ -299,7 +304,7 @@ def _format_activity_rows(reserve_info: dict, my_reservations: dict | None = Non
             )
         if cards:
             ticket_cards = (
-                "<div class=\"btb-ticket-panel\"><h4>我的 BW 票种</h4>"
+                "<div class=\"btb-ticket-panel\"><h4>已绑定入场凭证</h4>"
                 f"<div class=\"btb-mini-grid\">{''.join(cards)}</div></div>"
             )
 
@@ -346,16 +351,16 @@ def _format_activity_rows(reserve_info: dict, my_reservations: dict | None = Non
     if not rows:
         return (
             ticket_cards
-            + "<div class=\"btb-card-note\">暂无可显示的 BW 乐园预约项目。</div>"
+            + "<div class=\"btb-card-note\">暂无可显示的 BW 可选名额。</div>"
         )
 
     return (
         ticket_cards
         +
         "<div class=\"btb-ticket-panel\">"
-        "<h4>可预约项目</h4>"
+        "<h4>BW 可选名额</h4>"
         "<table class=\"btb-log-table\">"
-        "<thead><tr><th>日期</th><th>预约ID</th><th>状态</th><th>类型</th><th>项目</th><th>预约开始</th><th>活动时间</th><th>门票号</th></tr></thead>"
+        "<thead><tr><th>日期</th><th>名额ID</th><th>状态</th><th>类型</th><th>内容</th><th>开放时间</th><th>活动时间</th><th>凭证号</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
         "</div>"
@@ -413,7 +418,7 @@ def _build_bws_task_log_path(reserve_id: int, reserve_date: str, year: str) -> s
 
 def _bws_task_title(reserve_id: int, reserve_date: str, year: str) -> str:
     suffix = reserve_date or year or "自动日期"
-    return f"BW预约 {reserve_id} / {suffix}"
+    return f"BW名额 {reserve_id} / {suffix}"
 
 
 def bws_tab():
@@ -426,8 +431,8 @@ def bws_tab():
                 """
                 <div class="btb-card-head">
                     <div>
-                        <h3>BW 乐园预约</h3>
-                        <p>选择本地账号后可直接获取已激活票种和可预约项目。日期留空时会从 BW 官网自动获取最近一届日期。</p>
+                        <h3>BW 乐园名额助手</h3>
+                        <p>选择本地账号后可同步入场凭证与可抢名额。日期留空时会从 BW 官网自动识别最近一届档期。</p>
                     </div>
                 </div>
                 """
@@ -482,11 +487,11 @@ def bws_tab():
                     scale=2,
                 )
             with gr.Row(elem_classes="!justify-end"):
-                info_btn = gr.Button("获取预约信息", elem_classes="btb-soft-button")
+                info_btn = gr.Button("拉取项目列表", elem_classes="btb-soft-button")
 
             with gr.Row(elem_classes="btb-action-band !items-end"):
                 reserve_id = gr.Textbox(
-                    label="预约项目 ID",
+                    label="目标名额 ID",
                     value="",
                     placeholder="必填",
                     scale=2,
@@ -499,31 +504,43 @@ def bws_tab():
                     scale=2,
                 )
                 retry_limit = gr.Number(
-                    label="最大重试次数（0为持续重试）",
+                    label="最大提交轮次（0为持续提交）",
                     value=0,
                     minimum=0,
                     precision=0,
                     scale=2,
                 )
                 thread_count = gr.Number(
-                    label="并发线程数",
+                    label="并发数",
                     value=1,
                     minimum=1,
                     maximum=10,
                     precision=0,
                     scale=1,
                 )
-            with gr.Row(elem_classes="!justify-end"):
-                start_btn = gr.Button("开始预约", elem_classes="btb-strong-button")
-
             activity_panel = gr.HTML(
-                value='<div class="btb-card-note">选择账号后点击“获取预约信息”，系统会拉取你的 BW 票种和可预约项目。</div>'
+                value='<div class="btb-card-note">选择账号后点击“拉取项目列表”，系统会同步你的入场凭证和 BW 可选名额。</div>'
             )
-            with gr.Column(
-                visible=bool(visible_task_entries()),
-                elem_classes="btb-card btb-card-sky btb-layout-card",
-            ) as task_panel:
-                task_refresh_token = render_task_manager_panel(task_panel)
+
+        with gr.Row(elem_classes="btb-inline-actions !justify-end"):
+            stop_all_btn = gr.Button(
+                "一键终止",
+                variant="stop",
+                elem_classes="btb-soft-button btb-stop-all-button",
+                scale=0,
+                min_width=120,
+            )
+            start_btn = gr.Button(
+                "启动预约任务",
+                elem_classes="btb-strong-button",
+                scale=0,
+                min_width=140,
+            )
+        with gr.Column(
+            visible=bool(visible_task_entries()),
+            elem_classes="btb-card btb-card-sky btb-layout-card",
+        ) as task_panel:
+            task_refresh_token = render_task_manager_panel(task_panel)
 
     def refresh_login_status():
         choices = _get_account_choices()
@@ -560,7 +577,7 @@ def bws_tab():
         username = context.get("username", "未知账号")
         used_dates = context.get("reserve_dates", reserve_dates_value)
         return (
-            f'<div class="btb-card-note">当前账号：{html.escape(str(username))}；已拉取日期：{html.escape(str(used_dates))}</div>',
+            f'<div class="btb-card-note">使用账号：{html.escape(str(username))}；已同步日期：{html.escape(str(used_dates))}</div>',
             _format_activity_rows(
                 context.get("reserve_info", {}),
                 context.get("my_reservations", {}),
@@ -581,13 +598,13 @@ def bws_tab():
         _require_login()
         reserve_id_text = str(_reserve_id or "").strip()
         if not reserve_id_text:
-            raise gr.Error("请填写预约项目 ID。")
+            raise gr.Error("请填写目标名额 ID。")
         try:
             reserve_id_value = int(reserve_id_text)
         except ValueError:
-            raise gr.Error("预约项目 ID 必须是正整数。") from None
+            raise gr.Error("目标名额 ID 必须是正整数。") from None
         if reserve_id_value <= 0:
-            raise gr.Error("预约项目 ID 必须大于 0。")
+            raise gr.Error("目标名额 ID 必须大于 0。")
         year_value = str(_year or "").strip() or default_bws_year()
         dates_value = resolve_bws_reserve_dates(
             str(_reserve_dates or _reserve_date or "").strip(),
@@ -620,7 +637,7 @@ def bws_tab():
             log_file=log_file_path,
             pid=proc.pid,
         )
-        gr.Info("BW 乐园预约任务已启动，可在下方任务卡查看日志或终止进程。")
+        gr.Info("BW 名额任务已启动，可在下方任务卡查看日志或终止进程。")
         return gr.update(visible=True)
 
     refresh_btn.click(refresh_login_status, outputs=[login_status, local_account])
@@ -664,6 +681,11 @@ def bws_tab():
         outputs=task_panel,
     ).then(
         fn=refresh_task_panel,
+        inputs=None,
+        outputs=[task_refresh_token, task_panel],
+    )
+    stop_all_btn.click(
+        fn=stop_all_running_tasks,
         inputs=None,
         outputs=[task_refresh_token, task_panel],
     )

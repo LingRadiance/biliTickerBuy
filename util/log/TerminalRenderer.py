@@ -10,6 +10,7 @@ class TerminalRenderContext:
     config_name: str
     log_file: str
     platform_name: str
+    title: str = "抢票终端"
 
 
 @dataclass
@@ -68,7 +69,7 @@ class PlainTerminalRenderer(BaseTerminalRenderer):
 
     def render_header(self) -> None:
         print(
-            f"[抢票终端] 配置: {self.context.config_name} | 日志: {self.context.log_file}",
+            f"[{self.context.title}] 配置: {self.context.config_name} | 日志: {self.context.log_file}",
             flush=True,
         )
         self._print_snapshot(force=True)
@@ -118,7 +119,7 @@ class PlainTerminalRenderer(BaseTerminalRenderer):
 def _make_log_item(item) -> LogItem:
     message, kind, attempt_current, attempt_total = _extract_message_meta(item)
 
-    if kind != "attempt" or attempt_current is None or attempt_total is None:
+    if kind != "attempt" or attempt_current is None:
         return LogItem(
             raw_message=message,
             display_message=message,
@@ -199,6 +200,7 @@ class TextualTerminalRenderer(BaseTerminalRenderer):
         self.ready = threading.Event()
 
         ready = self.ready
+        context = self.context
 
         class TicketTerminalApp(App):
             CSS = """
@@ -258,8 +260,8 @@ class TextualTerminalRenderer(BaseTerminalRenderer):
                         yield self.log_widget
 
             def on_mount(self) -> None:
-                self.title = ""
-                self.sub_title = ""
+                self.title = context.title
+                self.sub_title = context.config_name
 
                 self.update_status()
                 self.update_log()
@@ -335,7 +337,7 @@ class TextualTerminalRenderer(BaseTerminalRenderer):
                     text.append(message, style="bold white")
                     return text
 
-                if message.startswith("距离开始抢票还有"):
+                if message.startswith(("距离开始抢票还有", "距开放还有")):
                     text.append("⏱ ", style="cyan")
                     text.append(message, style="cyan")
                     return text
@@ -346,7 +348,8 @@ class TextualTerminalRenderer(BaseTerminalRenderer):
                     return text
 
                 if (
-                    message.startswith("当前代理:")
+                    message.startswith("出口通道:")
+                    or message.startswith("BW 出口策略:")
                     or message.startswith("目前已配置代理")
                     or message.startswith("切换代理到 ")
                     or message.startswith("代理冷却:")
@@ -357,7 +360,11 @@ class TextualTerminalRenderer(BaseTerminalRenderer):
                     text.append(message, style="yellow")
                     return text
 
-                if "抢票成功" in message or "创建订单成功" in message:
+                if (
+                    "抢票成功" in message
+                    or "创建订单成功" in message
+                    or "预约成功" in message
+                ):
                     text.append("✓ ", style="bold green")
                     text.append(message, style="bold green")
                     return text
@@ -366,6 +373,7 @@ class TextualTerminalRenderer(BaseTerminalRenderer):
                     "接口异常" in message
                     or "请求异常" in message
                     or "程序异常" in message
+                    or "流程异常" in message
                 ):
                     text.append("✕ ", style="bold red")
                     text.append(message, style="bold red")
@@ -411,7 +419,7 @@ class TextualTerminalRenderer(BaseTerminalRenderer):
     def _dump_final_snapshot(self) -> None:
         state = self.app.state
         print(
-            f"[抢票终端] 配置: {self.context.config_name} | 日志: {self.context.log_file}",
+            f"[{self.context.title}] 配置: {self.context.config_name} | 日志: {self.context.log_file}",
             flush=True,
         )
         print(

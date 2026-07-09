@@ -332,7 +332,7 @@ class BwsApiClient:
         self.cookie_dict = _cookies_to_dict(cookies)
         self.csrf_token = self.cookie_dict.get("bili_jct", "")
         if not self.csrf_token:
-            raise RuntimeError("Cookie 中缺少 bili_jct，无法调用 BW 乐园预约接口")
+            raise RuntimeError("Cookie 中缺少 bili_jct，无法调用 BW 名额助手接口")
         self.timeout = timeout
         self.proxy_manager = ProxyManager(proxy or "none")
         self.session = requests.Session()
@@ -384,10 +384,10 @@ class BwsApiClient:
         )
         response.raise_for_status()
         payload = _response_json(response)
-        _raise_api_error(payload, action="获取 BW 乐园预约信息")
+        _raise_api_error(payload, action="同步 BW 名额列表")
         data = payload.get("data")
         if not isinstance(data, dict):
-            raise RuntimeError("BW 乐园预约信息为空")
+            raise RuntimeError("BW 名额列表为空")
         return data
 
     def get_my_reservations(self, *, year: str = DEFAULT_BWS_YEAR) -> dict[str, Any]:
@@ -402,7 +402,7 @@ class BwsApiClient:
         )
         response.raise_for_status()
         payload = _response_json(response)
-        _raise_api_error(payload, action="获取我的 BW 乐园预约")
+        _raise_api_error(payload, action="读取我的 BW 名额记录")
         data = payload.get("data")
         return data if isinstance(data, dict) else {}
 
@@ -539,7 +539,7 @@ def _ticket_days(info: dict[str, Any]) -> list[str]:
 def _find_activity(info: dict[str, Any], reserve_id: int) -> tuple[str, dict[str, Any]]:
     reserve_list = info.get("reserve_list")
     if not isinstance(reserve_list, dict):
-        raise RuntimeError("BW 乐园预约信息缺少 reserve_list")
+        raise RuntimeError("BW 名额列表缺少 reserve_list")
     ticket_dates = _ticket_days(info)
     searched_dates: set[str] = set()
     for date in ticket_dates:
@@ -641,12 +641,12 @@ def verify_bws_ticket_activation(
     target_date = _normalize_date(reserve_date) or _activity_date(activity, activity_day)
     ticket_info_map = info.get("user_ticket_info")
     if not isinstance(ticket_info_map, dict):
-        raise RuntimeError("账号未返回 BW 门票信息，请确认已登录并已激活预约日期门票")
+        raise RuntimeError("账号未返回 BW 入场凭证，请确认已登录并已绑定目标日期凭证")
     ticket_info = ticket_info_map.get(target_date)
     if not isinstance(ticket_info, dict):
         available = ", ".join(_ticket_days(info)) or "无"
         raise RuntimeError(
-            "当前账号没有激活目标预约日期的 BW 门票: {0}。可用日期: {1}".format(
+            "该登录凭证未绑定目标档期的 BW 入场凭证: {0}。可用日期: {1}".format(
                 target_date,
                 available,
             )
@@ -788,10 +788,10 @@ def bws_reserve_stream(config: BwsConfig) -> Generator[str, None, None]:
         cookies_path=config.cookies_path or None,
         proxy=config.https_proxys or "none",
     )
-    yield f"当前账号: {client.get_username()}"
+    yield f"使用账号: {client.get_username()}"
     proxy_manager = getattr(client, "proxy_manager", None)
     if proxy_manager is not None:
-        yield f"当前代理: {proxy_manager.current_proxy_display}"
+        yield f"出口通道: {proxy_manager.current_proxy_display}"
 
     info = client.get_reservation_info(
         reserve_dates=reserve_dates,
@@ -803,7 +803,7 @@ def bws_reserve_stream(config: BwsConfig) -> Generator[str, None, None]:
     except Exception:
         reserved_ids = set()
     if int(config.reserve_id) in reserved_ids:
-        yield f"该项目 ID={config.reserve_id} 已在当前账号的预约列表中，停止重复预约"
+        yield f"目标名额 ID={config.reserve_id} 已在账号记录中锁定，本次不再重复提交"
         return
     verified = verify_bws_ticket_activation(
         info,
@@ -819,9 +819,9 @@ def bws_reserve_stream(config: BwsConfig) -> Generator[str, None, None]:
         ticket_info,
     )
     title = _activity_title(activity)
-    yield "验权通过: 日期 {0} 已激活门票 {1}".format(target_date, ticket_no)
+    yield "入场凭证就绪: 档期 {0} 凭证 {1}".format(target_date, ticket_no)
     if config.show_detail:
-        yield "目标项目: {0} | ID={1} | 预约开始={2}".format(
+        yield "目标名额: {0} | ID={1} | 开放时间={2}".format(
             title,
             config.reserve_id,
             _format_timestamp(activity.get("effective_reserve_begin_time")),
@@ -833,7 +833,7 @@ def bws_reserve_stream(config: BwsConfig) -> Generator[str, None, None]:
                 else "VIP 优先购项目，当前票种非 VIP，使用普通预约时间"
             )
             yield vip_message
-        yield "门票信息: {0} - {1}".format(
+        yield "凭证信息: {0} - {1}".format(
             ticket_info.get("screen_name", ""),
             ticket_info.get("sku_name", ""),
         )
@@ -846,7 +846,7 @@ def bws_reserve_stream(config: BwsConfig) -> Generator[str, None, None]:
             if message:
                 yield str(message)
             elif countdown:
-                yield f"距离开始还有 {countdown}"
+                yield f"距开放还有 {countdown}"
 
     retry_limit = max(0, int(config.retry_limit or 0))
     interval_seconds = max(0, int(config.interval or 0)) / 1000.0
@@ -854,7 +854,7 @@ def bws_reserve_stream(config: BwsConfig) -> Generator[str, None, None]:
     strategy = _normalize_bws_proxy_strategy(config.proxy_assignment_strategy)
     if len(proxy_slots) > 1:
         masked_slots = ", ".join(ProxyManager.mask_proxy_value(proxy) for proxy in proxy_slots)
-        yield f"BW 并发策略: {strategy} | 并发出口: {masked_slots}"
+        yield f"BW 出口策略: {strategy} | 并发出口: {masked_slots}"
     attempt = 0
     while retry_limit <= 0 or attempt < retry_limit:
         attempt += 1
@@ -873,7 +873,7 @@ def bws_reserve_stream(config: BwsConfig) -> Generator[str, None, None]:
                 code,
                 result,
             )
-        yield "第 {0} 次预约结果: [{1}] {2} | {3}".format(
+        yield "第 {0} 轮提交反馈: [{1}] {2} | {3}".format(
             attempt,
             code,
             _bws_code_meaning(code),
@@ -886,7 +886,7 @@ def bws_reserve_stream(config: BwsConfig) -> Generator[str, None, None]:
             continue
         if interval_seconds > 0:
             time.sleep(interval_seconds)
-    yield f"已达到最大重试次数 {retry_limit}，预约未成功"
+    yield f"已达到最大提交轮次 {retry_limit}，暂未拿到名额"
 
 
 def run_bws_reserve_sync(config: BwsConfig | dict[str, Any]) -> dict[str, Any]:

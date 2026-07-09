@@ -57,7 +57,7 @@ def test_verify_bws_ticket_activation_uses_matching_activity_date():
 
 
 def test_verify_bws_ticket_activation_fails_when_date_not_activated():
-    with pytest.raises(RuntimeError, match="没有激活目标预约日期"):
+    with pytest.raises(RuntimeError, match="未绑定目标档期"):
         verify_bws_ticket_activation(_reservation_info(), reserve_id=1002)
 
 
@@ -176,7 +176,7 @@ def test_bws_reserve_stream_stops_when_already_reserved(monkeypatch):
     )
 
     assert captured["proxy"] == "http://127.0.0.1:8080"
-    assert any("已在当前账号的预约列表中" in message for message in logs)
+    assert any("已在账号记录中锁定" in message for message in logs)
 
 
 def test_bws_terminal_task_uses_bws_subcommand():
@@ -428,7 +428,7 @@ def test_bws_reserve_stream_retries_official_hot_status(monkeypatch):
         )
     )
 
-    assert sum("预约结果" in message for message in logs) == 3
+    assert sum("提交反馈" in message for message in logs) == 3
     assert any("当前预约火爆，请稍后重试" in message for message in logs)
     assert not any("仅限女性" in message for message in logs)
 
@@ -467,7 +467,7 @@ def test_bws_reserve_stream_stops_on_http_412_terminal_status(monkeypatch):
     )
 
     assert attempts == 1
-    assert sum("预约结果" in message for message in logs) == 1
+    assert sum("提交反馈" in message for message in logs) == 1
     assert any("IP 或账号被限流" in message for message in logs)
 
 
@@ -670,6 +670,6 @@ def test_bws_reserve_stream_marks_unknown_codes_retryable(monkeypatch):
         )
     )
 
-    assert sum("预约结果" in message for message in logs) == 2
+    assert sum("提交反馈" in message for message in logs) == 2
     assert any("【未知返回码】" in message for message in logs)
     assert any("按可重试处理" in message for message in logs)
